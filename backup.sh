@@ -254,16 +254,48 @@ perform_restore() {
 	
 
 	#clickhouse restore
+	msg "Starting Clickhouse restore"
 	#stop qan api 
-	#drop tables
+	supervisorctl stop qan-api2
+	#drop tables?
 	#will need to loop through #tablenames
-	#cat $tablename.sql | clickhouse-client --host=127.0.0.1 --database pmm
-	#mv $SOURCE_BACKUP_LOCATION/data/pmm/$tablename/* /srv/clickhouse/data/pmm/$tablename/detached/
-	#clickhouse-client --database pmm --query "ALTER TABLE $tablename ATTACH PARTITION 202111"
+	mapfile -t ch_array < <(ls $restore_from_dir/clickhouse | grep .sql | sed "s/\.sql//")
+	for table in "${ch_array[@]}"; do
+		if [ "$table" == "schema_migrations" ] ; then
+			# schema_migrations only needs SQL replay, other tables need data copies
+			msg "  Restoring $table table"
+			#/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
+			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
+			# this can be improved as all the data to form this statement is in $table.sql and will 
+			# be a bit more future-proofed if table structure changes
+			cat $table.data | /bin/clickhouse-client --host=127.0.0.1 "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('id UInt32, dirty UInt8, sequence UInt64') FORMAT TabSeparatedRaw"
+			#check that num rows in == num rows inserted
+			rows_in=`wc -l $table.data | cut -d " " -f1`
+			rows_inserted=`clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table"`
+			if [ $rows_in == $rows_inserted ] ; then 
+				msg "   Successfully restored $table"
+			else
+				msg "   There was a problem restoring $table, $rows_in rows backed up but $rows_inserted restored"
+			fi
+		else
+			msg "  Restoring $table table"
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
+			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
+			[ ! -d "/srv/clickhouse/data/default/events/detached" ] && mkdir -p /srv/clickhouse/data/default/events/detached/
+			cp -rl $restore_from_dir/clickhouse/pmm_backup_$restore/* /srv/clickhouse/data/default/events/detached/
+			mapfile -t partitions < <(ls /srv/clickhouse/data/default/events/detached | cut -d "_" -f1 | uniq)
+			for partition in "${partitions[@]}"; do 
+				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
+			done
+		fi
+	done
+
+
+	msg "Completed Clickhouse restore"
 
 	#support files restore
 	msg "Starting configuration and file restore"
-	#perms too?
 	#$/srv/alerting (root,root)
 	cp -af $restore_from_dir/folders/alerting/ /srv/alerting
 	#/srv/alertmanager (pmm,pmm)
@@ -282,7 +314,7 @@ perform_restore() {
 	msg "Completed configuration and file restore"
 
 	# cleanup
-	rm -rf $restore_from_dir
+	#rm -rf $restore_from_dir
 }
 
 main() {
