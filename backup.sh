@@ -35,8 +35,8 @@ Available options:
 -h, --help          Print this help and exit
 -v, --verbose       Print script debug info
 -i, --interactive   Run script in interactive mode
--r, --restore="YYYYMMDD_HHMMSS"
-       Restore backup with date/time code of YYYYMMDD_HHMMSS to a PMM server of the same version
+-r, --restore YYYYMMDD_HHMMSS
+       Restore backup with date/time code of YYYYMMDD_HHMMSS to a PMM server of the same version (.tar.gz file must be in $backup_root directory)
 EOF
   exit
 }
@@ -118,17 +118,56 @@ check_command() {
 # Verify and satisfy prerequisites
 ######################################
 check_prereqs() {
-        msg "Verifying and possibly installing prerequisite software...an internet connection is requried or you must install missing softare manually"
-        if ! check_command wget; then
-                yum install -y wget
-        fi
+	#set version 
+	if [ $restore == 0 ] ; then
+		#yum info -q --disablerepo="*source*" pmm-managed | grep -Em1 ^Version | sed 's/.*: //' > $backup_dir/pmm_version.txt
+		mkdir -p $backup_dir
+		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > $backup_dir/pmm_version.txt
 
-        if ! check_command /tmp/vmbackup-prod; then
-                cd /tmp
-                vm_version=`victoriametrics --version | cut -d '-' -f7`
-                wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/$vm_version/vmutils-amd64-$vm_version.tar.gz >> $logfile 
-                tar zxvf vmutils-amd64-$vm_version.tar.gz >> $logfile
-        fi
+		if ! check_command /tmp/vmbackup-prod; then
+			cd /tmp
+			vm_version=`victoriametrics --version | cut -d '-' -f7`
+			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/$vm_version/vmutils-amd64-$vm_version.tar.gz >> $logfile; then
+				die "Could not download needed component...check internet?"
+			fi
+			tar zxvf vmutils-amd64-$vm_version.tar.gz 2>&1 $logfile
+		fi
+
+	elif [ $restore != 0 ] ; then 
+		
+		msg "Extracting Backup Archive"
+		restore_from_dir="$backup_root/pmm_backup_$restore"
+		restore_from_file="$backup_root/pmm_backup_$restore.tar.gz"
+		mkdir -p $restore_from_dir
+		tar zxf $restore_from_file -C $restore_from_dir 
+		backup_pmm_version=`cat $restore_from_dir/pmm_version.txt`
+		restore_to_pmm_version=`pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //'`
+		if [ $backup_pmm_version != $restore_to_pmm_version ] ; then 
+			die "Cannot restore backup from PMM version $backup_pmm_version to PMM version $restore_to_pmm_version, install $backup_pmm_version on this host and retry." 
+		fi
+
+		if ! check_command /tmp/vmrestore-prod; then
+			cd /tmp
+			vm_version=`victoriametrics --version | cut -d '-' -f7`
+			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/$vm_version/vmutils-amd64-$vm_version.tar.gz >> $logfile; then
+				die "Could not download needed component...check internet?"
+			fi
+			tar zxvf vmutils-amd64-$vm_version.tar.gz 2>&1 $logfile
+		fi
+	fi
+
+	msg "Checking for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
+	if ! check_command wget; then
+		if ! yum install -y wget; then 
+			die "Could not download needed component...check internet?"
+		fi
+	fi
+
+### nice to haves ###
+	#will the backup fit on the filesystem (need >2x the size of the /srv directory)
+
+
+
 }
 
 ######################################
@@ -136,102 +175,132 @@ check_prereqs() {
 ######################################
 perform_backup() {
 
-### --> GET PMM VERSION 
 
-        #setup env
-        msg "Creating backup directory structure"
-        mkdir -p $backup_root/$backup_version/{postgres,vm,clickhouse,folders}
+	#setup env
+	msg "Creating backup directory structure"
+	mkdir -p $backup_root/$backup_version/{postgres,vm,clickhouse,folders}
 
 
-        #pg backup
-        msg "Starting PostgreSQL backup"
-        pg_dump -c -U pmm-managed > $backup_dir/postgres/backup.sql
-        msg "Completed PostgreSQL backup"
+	#pg backup
+	msg "Starting PostgreSQL backup"
+	pg_dump -c -U pmm-managed > $backup_dir/postgres/backup.sql
+	msg "Completed PostgreSQL backup"
 
-        #vm backup
-        msg "Starting VictoriaMetrics backup"
-        /tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://$backup_dir/vm/ -loggerOutput=stdout >> $logfile
-        msg "Completed VictoriaMetrics backup"
+	#vm backup
+	msg "Starting VictoriaMetrics backup"
+	/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://$backup_dir/vm/ -loggerOutput=stdout >> $logfile
+	msg "Completed VictoriaMetrics backup"
 
-        #clickhouse Backup
+	#clickhouse Backup
 
-        msg "Starting Clickhouse backup"
-        mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = 'pmm'")
-        for table in "${ch_array[@]}"
-        do
-                if [ "$table" == "schema_migrations" ] ; then
-                        msg "  Backing up $table table"
-                        /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
-                        /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > $backup_dir/clickhouse/$table.data
-                else
-                        msg "  Backing up $table table"
-                        /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
-                        /bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
-                fi
-        done
-                mv /srv/clickhouse/shadow $backup_dir/clickhouse/$backup_version
-        msg "Completed Clickhouse backup"
+	msg "Starting Clickhouse backup"
+	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = 'pmm'")
+	for table in "${ch_array[@]}"
+	do
+		if [ "$table" == "schema_migrations" ] ; then
+			msg "  Backing up $table table"
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > $backup_dir/clickhouse/$table.data
+		else
+			msg "  Backing up $table table"
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
+			/bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
+		fi
+	done
+		mv /srv/clickhouse/shadow $backup_dir/clickhouse/$backup_version
+	msg "Completed Clickhouse backup"
 
-        #support files backup
-        msg "Backing up configuration and supporting files"
+	#support files backup
+	msg "Backing up configuration and supporting files"
 
-        cp -af /srv/alerting $backup_dir/folders/
-        cp -af /srv/alertmanager $backup_dir/folders/
-        cp -af /srv/grafana $backup_dir/folders/
-        cp -af /srv/nginx $backup_dir/folders/
-        cp -af /srv/prometheus $backup_dir/folders/
-        cp -af /srv/pmm-distribution $backup_dir/folders/
+	cp -af /srv/alerting $backup_dir/folders/
+	cp -af /srv/alertmanager $backup_dir/folders/
+	cp -af /srv/grafana $backup_dir/folders/
+	cp -af /srv/nginx $backup_dir/folders/
+	cp -af /srv/prometheus $backup_dir/folders/
+	cp -af /srv/pmm-distribution $backup_dir/folders/
 
-        msg "Completed configuration and supporting files backup"
+	msg "Completed configuration and supporting files backup"
 
-        msg "Compressing backup artifact"
-        tar -czf $backup_root/$backup_version.tar.gz $backup_dir >> $logfile
-        msg "Cleaning up"
-        rm -rf $backup_dir
-        msg "\nBackup Complete"
+	msg "Compressing backup artifact"
+	tar -czf $backup_root/$backup_version.tar.gz -C $backup_dir . >> $logfile
+	msg "Cleaning up"
+	rm -rf $backup_dir
+	msg "\nBackup Complete"
 }
 
 
+######################################
+# Perform Restore of PMM
+######################################
+perform_restore() {
 
+	#stop pmm-managed locally to restore data
+	msg "Stopping pmm-managed to begin restore"
+	supervisorctl stop pmm-managed
+	msg "pmm-managed stopped, restore starting"
+	
+	#pg restore
+	msg "Starting PostgreSQL restore"
+	psql -U pmm-managed -f $restore_from_dir/postgres/backup.sql
+	msg "Completed PostgreSQL restore"
 
-#pg restore
-#psql -U pmm-managed -f /tmp/backup.sql
+	#vm restore
+	msg "Starting VictoriaMetrics restore"
+	supervisorctl stop victoriametrics
+	/tmp/vmrestore-prod -src=fs:///$restore_from_dir/vm/ -storageDataPath=/srv/victoriametrics/data
+	supervisorctl start victoriametrics
+	msg "Completed VictiriaMetrics restore"
+	
 
+	#clickhouse restore
+	#stop qan api 
+	#drop tables
+	#will need to loop through #tablenames
+	#cat $tablename.sql | clickhouse-client --host=127.0.0.1 --database pmm
+	#mv $SOURCE_BACKUP_LOCATION/data/pmm/$tablename/* /srv/clickhouse/data/pmm/$tablename/detached/
+	#clickhouse-client --database pmm --query "ALTER TABLE $tablename ATTACH PARTITION 202111"
 
-#vm restore
-#./vmrestore-prod -src=fs:///srv/backup/vm/ -storageDataPath=/srv/victoriametrics/data
+	#support files restore
+	msg "Starting configuration and file restore"
+	#perms too?
+	#$/srv/alerting (root,root)
+	cp -af $restore_from_dir/folders/alerting/ /srv/alerting
+	#/srv/alertmanager (pmm,pmm)
+	cp -af $restore_from_dir/folders/alertmanager/ /srv/alertmanager	
+	#/srv/grafana (grafana,grafana)
+	cp -af $restore_from_dir/folders/grafana/ /srv/grafana
+	#/srv/nginx (root,root)
+	cp -af $restore_from_dir/folders/nginx/ /srv/nginx
+	#/srv/prometheus (pmm,pmm)
+	cp -af $restore_from_dir/folders/prometheus/ /srv/prometheus
+	#/srv/pmm-distribution (root,root) (optional)
+	cp -af $restore_from_dir/folders/pmm-distribution /srv/
 
-#clickhouse restore
-#will need to loop through #tablenames
-#cat $tablename.sql | clickhouse-client --host=127.0.0.1 --database pmm
-#mv $SOURCE_BACKUP_LOCATION/data/pmm/$tablename/* /srv/clickhouse/data/pmm/$tablename/detached/
-#clickhouse-client --database pmm --query "ALTER TABLE $tablename ATTACH PARTITION 202111"
+	#last step
+	supervisorctl restart grafana nginx pmm-managed
+	msg "Completed configuration and file restore"
 
-#support files restore
-#perms too
-#$/srv/alerting (root,root)
-#/srv/alertmanager (pmm,pmm)
-#/srv/grafana (grafana,grafana)
-#/srv/ia (root,root)
-#/srv/nginx (root,root)
-#/srv/prometheus (pmm,pmm)
-#/srv/pmm-distribution (root,root) (optional)
-
-#last step
-#supervisorctl restart pmm-managed postgresql clickhouse victoriametrics grafana nginx alertmanager qan-api2 vmalert
+	# cleanup
+	rm -rf $restore_from_dir
+}
 
 main() {
-        setup_colors
-        check_prereqs
-        if [ $restore != 0 ]; then 
-                #do restore stuff here
-                msg 'restore coming soon'
-        else
-                perform_backup
-        fi
-        
+	setup_colors
+	if [ $restore != 0 ]; then 
+		#do restore stuff here
+		msg "restore coming soon: $restore"
+		check_prereqs
+		perform_restore
+	else
+		check_prereqs
+		perform_backup
+	fi
+	
 }
 
 parse_params "$@"
 main
-die "PMM Backup Tool" 0 
+die "Thank you for using the PMM Backup Tool!" 0 
+
+
