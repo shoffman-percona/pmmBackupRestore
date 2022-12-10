@@ -269,9 +269,9 @@ perform_restore() {
 			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
 			# this can be improved as all the data to form this statement is in $table.sql and will 
 			# be a bit more future-proofed if table structure changes
-			cat $table.data | /bin/clickhouse-client --host=127.0.0.1 "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('id UInt32, dirty UInt8, sequence UInt64') FORMAT TabSeparatedRaw"
+			cat $restore_from_dir/clickhouse/$table.data | /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
 			#check that num rows in == num rows inserted
-			rows_in=`wc -l $table.data | cut -d " " -f1`
+			rows_in=`/bin/wc -l $restore_from_dir/clickhouse/$table.data | cut -d " " -f1`
 			rows_inserted=`clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table"`
 			if [ $rows_in == $rows_inserted ] ; then 
 				msg "   Successfully restored $table"
@@ -281,11 +281,16 @@ perform_restore() {
 		else
 			msg "  Restoring $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
+			msg "  Creating structure"
 			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
 			[ ! -d "/srv/clickhouse/data/default/events/detached" ] && mkdir -p /srv/clickhouse/data/default/events/detached/
-			cp -rl $restore_from_dir/clickhouse/pmm_backup_$restore/* /srv/clickhouse/data/default/events/detached/
-			mapfile -t partitions < <(ls /srv/clickhouse/data/default/events/detached | cut -d "_" -f1 | uniq)
+			msg "  Copying files"
+			folder=`cat $restore_from_dir/clickhouse/pmm_backup_$restore/increment.txt`
+			cp -rf $restore_from_dir/clickhouse/pmm_backup_$restore/$folder/* /srv/clickhouse/data/default/events/detached/
+			msg "  Gathering partitions"
+			mapfile -t partitions < <(ls /srv/clickhouse/data/default/events/detached/data/pmm/$table | cut -d "_" -f1 | uniq)
 			for partition in "${partitions[@]}"; do 
+				msg "    Loading partition $partition"
 				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
 			done
 		fi
