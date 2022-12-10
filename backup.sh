@@ -237,34 +237,32 @@ perform_restore() {
 
 	#stop pmm-managed locally to restore data
 	msg "Stopping pmm-managed to begin restore"
-	supervisorctl stop pmm-managed
+	supervisorctl stop pmm-managed &>$logfile
 	msg "pmm-managed stopped, restore starting"
 	
 	#pg restore
 	msg "Starting PostgreSQL restore"
-	psql -U pmm-managed -f $restore_from_dir/postgres/backup.sql
+	psql -U pmm-managed -f $restore_from_dir/postgres/backup.sql &>$logfile 
 	msg "Completed PostgreSQL restore"
 
 	#vm restore
 	msg "Starting VictoriaMetrics restore"
-	supervisorctl stop victoriametrics
-	/tmp/vmrestore-prod -src=fs:///$restore_from_dir/vm/ -storageDataPath=/srv/victoriametrics/data
-	supervisorctl start victoriametrics
+	supervisorctl stop victoriametrics &>$logfile
+	/tmp/vmrestore-prod -src=fs:///$restore_from_dir/vm/ -storageDataPath=/srv/victoriametrics/data &>$logfile
+	supervisorctl start victoriametrics &>$logfile
 	msg "Completed VictiriaMetrics restore"
 	
 
 	#clickhouse restore
 	msg "Starting Clickhouse restore"
 	#stop qan api 
-	supervisorctl stop qan-api2
-	#drop tables?
-	#will need to loop through #tablenames
+	supervisorctl stop qan-api2 &>$logfile
+	#will need to loop through $tables
 	mapfile -t ch_array < <(ls $restore_from_dir/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
 		if [ "$table" == "schema_migrations" ] ; then
-			# schema_migrations only needs SQL replay, other tables need data copies
+			# schema_migrations only needs SQL replay, other tables need data copies and reattaching files
 			msg "  Restoring $table table"
-			#/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
 			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
 			# this can be improved as all the data to form this statement is in $table.sql and will 
@@ -274,21 +272,20 @@ perform_restore() {
 			rows_in=`/bin/wc -l $restore_from_dir/clickhouse/$table.data | cut -d " " -f1`
 			rows_inserted=`clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table"`
 			if [ $rows_in == $rows_inserted ] ; then 
-				msg "   Successfully restored $table"
+				msg "  Successfully restored $table"
 			else
-				msg "   There was a problem restoring $table, $rows_in rows backed up but $rows_inserted restored"
+				msg "  There was a problem restoring $table, $rows_in rows backed up but $rows_inserted restored"
 			fi
 		else
 			msg "  Restoring $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
-			msg "  Creating structure"
 			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
-			[ ! -d "/srv/clickhouse/data/default/events/detached" ] && mkdir -p /srv/clickhouse/data/default/events/detached/
+			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && mkdir -p /srv/clickhouse/data/pmm/$table/detached/
 			msg "  Copying files"
 			folder=`cat $restore_from_dir/clickhouse/pmm_backup_$restore/increment.txt`
-			cp -rf $restore_from_dir/clickhouse/pmm_backup_$restore/$folder/* /srv/clickhouse/data/default/events/detached/
+			cp -rlf $restore_from_dir/clickhouse/pmm_backup_$restore/$folder/data/pmm/$table/* /srv/clickhouse/data/pmm/$table/detached/
 			msg "  Gathering partitions"
-			mapfile -t partitions < <(ls /srv/clickhouse/data/default/events/detached/data/pmm/$table | cut -d "_" -f1 | uniq)
+			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/$table/detached/ | cut -d "_" -f1 | uniq)
 			for partition in "${partitions[@]}"; do 
 				msg "    Loading partition $partition"
 				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
@@ -315,7 +312,7 @@ perform_restore() {
 	cp -af $restore_from_dir/folders/pmm-distribution /srv/
 
 	#last step
-	supervisorctl restart grafana nginx pmm-managed
+	supervisorctl restart grafana nginx pmm-managed &>$logfile
 	msg "Completed configuration and file restore"
 
 	# cleanup
@@ -326,7 +323,7 @@ main() {
 	setup_colors
 	if [ $restore != 0 ]; then 
 		#do restore stuff here
-		msg "restore coming soon: $restore"
+		msg "Restoring backup pmm_backup_$restore.tar.gz"
 		check_prereqs
 		perform_restore
 	else
