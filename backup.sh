@@ -249,6 +249,7 @@ perform_restore() {
 	msg "Starting VictoriaMetrics restore"
 	supervisorctl stop victoriametrics &>$logfile
 	/tmp/vmrestore-prod -src=fs:///$restore_from_dir/vm/ -storageDataPath=/srv/victoriametrics/data &>$logfile
+	chown -R pmm.pmm /srv/victoriametrics/data
 	supervisorctl start victoriametrics &>$logfile
 	msg "Completed VictiriaMetrics restore"
 	
