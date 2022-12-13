@@ -139,7 +139,7 @@ check_prereqs() {
 		restore_from_dir="$backup_root/pmm_backup_$restore"
 		restore_from_file="$backup_root/pmm_backup_$restore.tar.gz"
 		mkdir -p $restore_from_dir
-		tar zxf $restore_from_file -C $restore_from_dir 
+		tar zxf $restore_from_file -C $restore_from_dir 2>&1 $logfile
 		backup_pmm_version=`cat $restore_from_dir/pmm_version.txt`
 		restore_to_pmm_version=`pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //'`
 		if [ $backup_pmm_version != $restore_to_pmm_version ] ; then 
