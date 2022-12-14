@@ -129,7 +129,7 @@ check_prereqs() {
 			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"$vm_version"/vmutils-amd64-"$vm_version".tar.gz >> $logfile; then
 				die "Could not download needed component...check internet?"
 			fi
-			tar zxvf vmutils-amd64-$vm_version.tar.gz 2>&1 $logfile
+			tar zxf vmutils-amd64-"$vm_version".tar.gz 2>&1 $logfile
 		fi
 
 	elif [ "$restore" != 0 ] ; then 
@@ -137,8 +137,8 @@ check_prereqs() {
 		restore_from_dir="$backup_root/pmm_backup_$restore"
 		restore_from_file="$backup_root/pmm_backup_$restore.tar.gz"
 		mkdir -p "$restore_from_dir"
-		tar zxf "$restore_from_file" -C "$restore_from_dir" 2>&1 $logfile
-		backup_pmm_version=$(cat $restore_from_dir/pmm_version.txt)
+		tar zxf "$restore_from_file" -C "$restore_from_dir" &>>$logfile
+		backup_pmm_version=$(cat "$restore_from_dir"/pmm_version.txt)
 		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //')
 		if [ "$backup_pmm_version" != "$restore_to_pmm_version" ] ; then 
 			die "Cannot restore backup from PMM version $backup_pmm_version to PMM version $restore_to_pmm_version, install $backup_pmm_version on this host and retry." 
@@ -201,7 +201,7 @@ perform_backup() {
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > "$backup_dir"/clickhouse/"$table".data
 		else
 			msg "  Backing up $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
 			/bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
 		fi
 	done
@@ -235,27 +235,27 @@ perform_restore() {
 
 	#stop pmm-managed locally to restore data
 	msg "Stopping pmm-managed to begin restore"
-	supervisorctl stop pmm-managed nginx &>$logfile
+	supervisorctl stop pmm-managed nginx &>>$logfile
 	msg "pmm-managed stopped, restore starting"
 	
 	#pg restore
 	msg "Starting PostgreSQL restore"
-	psql -U pmm-managed -f "$restore_from_dir"/postgres/backup.sql &>$logfile 
+	psql -U pmm-managed -f "$restore_from_dir"/postgres/backup.sql &>>$logfile 
 	msg "Completed PostgreSQL restore"
 
 	#vm restore
 	msg "Starting VictoriaMetrics restore"
-	supervisorctl stop victoriametrics &>$logfile
-	/tmp/vmrestore-prod -src=fs:///"$restore_from_dir"/vm/ -storageDataPath=/srv/victoriametrics/data &>$logfile
+	supervisorctl stop victoriametrics &>>$logfile
+	/tmp/vmrestore-prod -src=fs:///"$restore_from_dir"/vm/ -storageDataPath=/srv/victoriametrics/data &>>$logfile
 	chown -R pmm.pmm /srv/victoriametrics/data
-	supervisorctl start victoriametrics &>$logfile
+	supervisorctl start victoriametrics &>>$logfile
 	msg "Completed VictiriaMetrics restore"
 	
 
 	#clickhouse restore
 	msg "Starting Clickhouse restore"
 	#stop qan api 
-	supervisorctl stop qan-api2 &>$logfile
+	supervisorctl stop qan-api2 &>>$logfile
 	#will need to loop through $tables
 	mapfile -t ch_array < <(ls "$restore_from_dir"/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
@@ -269,7 +269,7 @@ perform_restore() {
 			cat "$restore_from_dir"/clickhouse/"$table".data | /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
 			#check that num rows in == num rows inserted
 			rows_in=$(/bin/wc -l "$restore_from_dir"/clickhouse/"$table".data | cut -d " " -f1)
-			rows_inserted=`clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table"`
+			rows_inserted=$(clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table")
 			if [ "$rows_in" == "$rows_inserted" ] ; then 
 				msg "  Successfully restored $table"
 			else
@@ -311,16 +311,16 @@ perform_restore() {
 	cp -af "$restore_from_dir"/folders/pmm-distribution /srv/
 
 	#last step
-	supervisorctl restart grafana nginx pmm-managed &>$logfile
+	supervisorctl restart grafana nginx pmm-managed &>>$logfile
 	msg "Completed configuration and file restore"
 
 	# cleanup
-	#rm -rf $restore_from_dir
+	rm -rf "$restore_from_dir"
 }
 
 main() {
 	setup_colors
-	if [ $restore != 0 ]; then 
+	if [ "$restore" != 0 ]; then 
 		#do restore stuff here
 		msg "Restoring backup pmm_backup_$restore.tar.gz"
 		check_prereqs
