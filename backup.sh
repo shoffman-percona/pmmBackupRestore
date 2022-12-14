@@ -34,7 +34,6 @@ This tool is used to take online backups and can be used to restore a backup as 
 Available options:
 -h, --help          Print this help and exit
 -v, --verbose       Print script debug info
--i, --interactive   Run script in interactive mode
 -r, --restore YYYYMMDD_HHMMSS
        Restore backup with date/time code of YYYYMMDD_HHMMSS to a PMM server of the same version (.tar.gz file must be in $backup_root directory)
 EOF
@@ -49,7 +48,7 @@ parse_params() {
     case "${1-}" in
     -h | --help) usage ;;
     -v | --verbose) set -x ;;
-    -i | --interactive) interactive=1 ;;
+#    -i | --interactive) interactive=1 ;;
     -r | --restore)
       restore="${2-}"
       shift
@@ -119,40 +118,39 @@ check_command() {
 ######################################
 check_prereqs() {
 	#set version 
-	if [ $restore == 0 ] ; then
+	if [ "$restore" == 0 ] ; then
 		#yum info -q --disablerepo="*source*" pmm-managed | grep -Em1 ^Version | sed 's/.*: //' > $backup_dir/pmm_version.txt
-		mkdir -p $backup_dir
-		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > $backup_dir/pmm_version.txt
+		mkdir -p "$backup_dir"
+		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > "$backup_dir"/pmm_version.txt
 
 		if ! check_command /tmp/vmbackup-prod; then
 			cd /tmp
-			vm_version=`victoriametrics --version | cut -d '-' -f7`
-			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/$vm_version/vmutils-amd64-$vm_version.tar.gz >> $logfile; then
+			vm_version=$(victoriametrics --version | cut -d '-' -f7)
+			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"$vm_version"/vmutils-amd64-"$vm_version".tar.gz >> $logfile; then
 				die "Could not download needed component...check internet?"
 			fi
 			tar zxvf vmutils-amd64-$vm_version.tar.gz 2>&1 $logfile
 		fi
 
-	elif [ $restore != 0 ] ; then 
-		
+	elif [ "$restore" != 0 ] ; then 
 		msg "Extracting Backup Archive"
 		restore_from_dir="$backup_root/pmm_backup_$restore"
 		restore_from_file="$backup_root/pmm_backup_$restore.tar.gz"
-		mkdir -p $restore_from_dir
-		tar zxf $restore_from_file -C $restore_from_dir 2>&1 $logfile
-		backup_pmm_version=`cat $restore_from_dir/pmm_version.txt`
-		restore_to_pmm_version=`pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //'`
-		if [ $backup_pmm_version != $restore_to_pmm_version ] ; then 
+		mkdir -p "$restore_from_dir"
+		tar zxf "$restore_from_file" -C "$restore_from_dir" 2>&1 $logfile
+		backup_pmm_version=$(cat $restore_from_dir/pmm_version.txt)
+		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //')
+		if [ "$backup_pmm_version" != "$restore_to_pmm_version" ] ; then 
 			die "Cannot restore backup from PMM version $backup_pmm_version to PMM version $restore_to_pmm_version, install $backup_pmm_version on this host and retry." 
 		fi
 
 		if ! check_command /tmp/vmrestore-prod; then
 			cd /tmp
-			vm_version=`victoriametrics --version | cut -d '-' -f7`
-			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/$vm_version/vmutils-amd64-$vm_version.tar.gz >> $logfile; then
+			vm_version=$(victoriametrics --version | cut -d '-' -f7)
+			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"$vm_version"/vmutils-amd64-"$vm_version".tar.gz >> $logfile; then
 				die "Could not download needed component...check internet?"
 			fi
-			tar zxvf vmutils-amd64-$vm_version.tar.gz 2>&1 $logfile
+			tar zxvf vmutils-amd64-"$vm_version".tar.gz 2>&1 $logfile
 		fi
 	fi
 
@@ -178,17 +176,17 @@ perform_backup() {
 
 	#setup env
 	msg "Creating backup directory structure"
-	mkdir -p $backup_root/$backup_version/{postgres,vm,clickhouse,folders}
+	mkdir -p "$backup_root"/"$backup_version"/{postgres,vm,clickhouse,folders}
 
 
 	#pg backup
 	msg "Starting PostgreSQL backup"
-	pg_dump -c -U pmm-managed > $backup_dir/postgres/backup.sql
+	pg_dump -c -U pmm-managed > "$backup_dir"/postgres/backup.sql
 	msg "Completed PostgreSQL backup"
 
 	#vm backup
 	msg "Starting VictoriaMetrics backup"
-	/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://$backup_dir/vm/ -loggerOutput=stdout >> $logfile
+	/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://"$backup_dir"/vm/ -loggerOutput=stdout >> $logfile
 	msg "Completed VictoriaMetrics backup"
 
 	#clickhouse Backup
@@ -199,33 +197,33 @@ perform_backup() {
 	do
 		if [ "$table" == "schema_migrations" ] ; then
 			msg "  Backing up $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > $backup_dir/clickhouse/$table.data
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
+			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > "$backup_dir"/clickhouse/"$table".data
 		else
 			msg "  Backing up $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > $backup_dir/clickhouse/$table.sql
 			/bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
 		fi
 	done
-		mv /srv/clickhouse/shadow $backup_dir/clickhouse/$backup_version
+		mv /srv/clickhouse/shadow "$backup_dir"/clickhouse/"$backup_version"
 	msg "Completed Clickhouse backup"
 
 	#support files backup
 	msg "Backing up configuration and supporting files"
 
-	cp -af /srv/alerting $backup_dir/folders/
-	cp -af /srv/alertmanager $backup_dir/folders/
-	cp -af /srv/grafana $backup_dir/folders/
-	cp -af /srv/nginx $backup_dir/folders/
-	cp -af /srv/prometheus $backup_dir/folders/
-	cp -af /srv/pmm-distribution $backup_dir/folders/
+	cp -af /srv/alerting "$backup_dir"/folders/
+	cp -af /srv/alertmanager "$backup_dir"/folders/
+	cp -af /srv/grafana "$backup_dir"/folders/
+	cp -af /srv/nginx "$backup_dir"/folders/
+	cp -af /srv/prometheus "$backup_dir"/folders/
+	cp -af /srv/pmm-distribution "$backup_dir"/folders/
 
 	msg "Completed configuration and supporting files backup"
 
 	msg "Compressing backup artifact"
-	tar -czf $backup_root/$backup_version.tar.gz -C $backup_dir . >> $logfile
+	tar -czf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" . >> $logfile
 	msg "Cleaning up"
-	rm -rf $backup_dir
+	rm -rf "$backup_dir"
 	msg "\nBackup Complete"
 }
 
@@ -237,18 +235,18 @@ perform_restore() {
 
 	#stop pmm-managed locally to restore data
 	msg "Stopping pmm-managed to begin restore"
-	supervisorctl stop pmm-managed &>$logfile
+	supervisorctl stop pmm-managed nginx &>$logfile
 	msg "pmm-managed stopped, restore starting"
 	
 	#pg restore
 	msg "Starting PostgreSQL restore"
-	psql -U pmm-managed -f $restore_from_dir/postgres/backup.sql &>$logfile 
+	psql -U pmm-managed -f "$restore_from_dir"/postgres/backup.sql &>$logfile 
 	msg "Completed PostgreSQL restore"
 
 	#vm restore
 	msg "Starting VictoriaMetrics restore"
 	supervisorctl stop victoriametrics &>$logfile
-	/tmp/vmrestore-prod -src=fs:///$restore_from_dir/vm/ -storageDataPath=/srv/victoriametrics/data &>$logfile
+	/tmp/vmrestore-prod -src=fs:///"$restore_from_dir"/vm/ -storageDataPath=/srv/victoriametrics/data &>$logfile
 	chown -R pmm.pmm /srv/victoriametrics/data
 	supervisorctl start victoriametrics &>$logfile
 	msg "Completed VictiriaMetrics restore"
@@ -259,20 +257,20 @@ perform_restore() {
 	#stop qan api 
 	supervisorctl stop qan-api2 &>$logfile
 	#will need to loop through $tables
-	mapfile -t ch_array < <(ls $restore_from_dir/clickhouse | grep .sql | sed "s/\.sql//")
+	mapfile -t ch_array < <(ls "$restore_from_dir"/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
 		if [ "$table" == "schema_migrations" ] ; then
 			# schema_migrations only needs SQL replay, other tables need data copies and reattaching files
 			msg "  Restoring $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
-			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
+			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
 			# this can be improved as all the data to form this statement is in $table.sql and will 
 			# be a bit more future-proofed if table structure changes
-			cat $restore_from_dir/clickhouse/$table.data | /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
+			cat "$restore_from_dir"/clickhouse/"$table".data | /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
 			#check that num rows in == num rows inserted
-			rows_in=`/bin/wc -l $restore_from_dir/clickhouse/$table.data | cut -d " " -f1`
+			rows_in=$(/bin/wc -l "$restore_from_dir"/clickhouse/"$table".data | cut -d " " -f1)
 			rows_inserted=`clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table"`
-			if [ $rows_in == $rows_inserted ] ; then 
+			if [ "$rows_in" == "$rows_inserted" ] ; then 
 				msg "  Successfully restored $table"
 			else
 				msg "  There was a problem restoring $table, $rows_in rows backed up but $rows_inserted restored"
@@ -280,13 +278,13 @@ perform_restore() {
 		else
 			msg "  Restoring $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
-			cat $restore_from_dir/clickhouse/$table.sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
-			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && mkdir -p /srv/clickhouse/data/pmm/$table/detached/
+			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
+			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && mkdir -p /srv/clickhouse/data/pmm/"$table"/detached/
 			msg "  Copying files"
-			folder=`cat $restore_from_dir/clickhouse/pmm_backup_$restore/increment.txt`
-			cp -rlf $restore_from_dir/clickhouse/pmm_backup_$restore/$folder/data/pmm/$table/* /srv/clickhouse/data/pmm/$table/detached/
+			folder=$(cat "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/increment.txt)
+			cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/pmm/"$table"/* /srv/clickhouse/data/pmm/"$table"/detached/
 			msg "  Gathering partitions"
-			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/$table/detached/ | cut -d "_" -f1 | uniq)
+			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/"$table"/detached/ | cut -d "_" -f1 | uniq)
 			for partition in "${partitions[@]}"; do 
 				msg "    Loading partition $partition"
 				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
@@ -300,17 +298,17 @@ perform_restore() {
 	#support files restore
 	msg "Starting configuration and file restore"
 	#$/srv/alerting (root,root)
-	cp -af $restore_from_dir/folders/alerting/ /srv/alerting
+	cp -af "$restore_from_dir"/folders/alerting/ /srv/alerting
 	#/srv/alertmanager (pmm,pmm)
-	cp -af $restore_from_dir/folders/alertmanager/ /srv/alertmanager	
+	cp -af "$restore_from_dir"/folders/alertmanager/ /srv/alertmanager	
 	#/srv/grafana (grafana,grafana)
-	cp -af $restore_from_dir/folders/grafana/ /srv/grafana
+	cp -af "$restore_from_dir"/folders/grafana/ /srv/grafana
 	#/srv/nginx (root,root)
-	cp -af $restore_from_dir/folders/nginx/ /srv/nginx
+	cp -af "$restore_from_dir"/folders/nginx/ /srv/nginx
 	#/srv/prometheus (pmm,pmm)
-	cp -af $restore_from_dir/folders/prometheus/ /srv/prometheus
+	cp -af "$restore_from_dir"/folders/prometheus/ /srv/prometheus
 	#/srv/pmm-distribution (root,root) (optional)
-	cp -af $restore_from_dir/folders/pmm-distribution /srv/
+	cp -af "$restore_from_dir"/folders/pmm-distribution /srv/
 
 	#last step
 	supervisorctl restart grafana nginx pmm-managed &>$logfile
