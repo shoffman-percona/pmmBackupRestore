@@ -4,7 +4,7 @@ The PMM Backup and Restore script is designed for anyone that wants to take full
 # How to run - Backup
 Running the script is as simple as downloading the backup.sh script, storing it somewhere inside your docker container, AMI, or OVF and running by hand or as a nightly cron job. 
 * `curl` or `wget` the full script inside the PMM server/container
-* make the file executable (`chnod +x backup.sh`)
+* make the file executable (`chnod +x /path/to/backup.sh`)
 * run the file `/path/to/backup.sh`
 * backup artifacts are stored in the /srv/backups directory
 
@@ -17,7 +17,7 @@ If you run this as a cron job, you'll need to clean up the backup artifacts as p
 # How to run - Restore
 The same script can be used to restore the data taken from teh backup process and will handle all the data, permissions, and cleanup.  If you're restoring to a different server you will first need to download and stage the file using on your target PMM server
 * `curl` or `wget` the full script inside the PMM server/container
-* make the file executable (`chnod +x backup.sh`)
+* make the file executable (`chnod +x /path/to/backup.sh`)
 * run the restore `/path/to/backup.sh --restore YYYYMMDD_HHMMSS` (where the YYYYMMDD_HHMMSS comes from the backup file you wish to restore in the format pmm_backup_YYYYMMDD_HHMMSS.tar.gz)
 
 You should know:
