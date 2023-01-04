@@ -113,10 +113,35 @@ check_command() {
   command -v "$@" 1>/dev/null
 }
 
+#######################################
+# Runs command as root.
+#######################################
+run_root() {
+  sh='sh -c'
+  if [ "$(id -un)" != 'root' ]; then
+    if check_command sudo; then
+      sh='sudo -E sh -c'
+    elif check_command su; then
+      sh='su -c'
+    else
+      die "${RED}ERROR: root rights needed to run "$*" command ${NOFORMAT}"
+    fi
+  fi
+  ${sh} "$@" &>>$logfile
+}  
+
 ######################################
 # Verify and satisfy prerequisites
 ######################################
 check_prereqs() {
+
+	msg "Checking for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
+	if ! check_command wget; then
+		if ! yum install -y wget; then 
+			die "Could not download needed component...check internet?"
+		fi
+	fi
+
 	#set version 
 	if [ "$restore" == 0 ] ; then
 		#yum info -q --disablerepo="*source*" pmm-managed | grep -Em1 ^Version | sed 's/.*: //' > $backup_dir/pmm_version.txt
@@ -129,7 +154,7 @@ check_prereqs() {
 			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"$vm_version"/vmutils-amd64-"$vm_version".tar.gz >> $logfile; then
 				die "Could not download needed component...check internet?"
 			fi
-			tar zxf vmutils-amd64-"$vm_version".tar.gz 2>&1 $logfile
+			tar zxf vmutils-amd64-"$vm_version".tar.gz
 		fi
 
 	elif [ "$restore" != 0 ] ; then 
@@ -137,7 +162,7 @@ check_prereqs() {
 		restore_from_dir="$backup_root/pmm_backup_$restore"
 		restore_from_file="$backup_root/pmm_backup_$restore.tar.gz"
 		mkdir -p "$restore_from_dir"
-		tar zxf "$restore_from_file" -C "$restore_from_dir" &>>$logfile
+		tar zxf "$restore_from_file" -C "$restore_from_dir"
 		backup_pmm_version=$(cat "$restore_from_dir"/pmm_version.txt)
 		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //')
 		if [ "$backup_pmm_version" != "$restore_to_pmm_version" ] ; then 
@@ -150,16 +175,10 @@ check_prereqs() {
 			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"$vm_version"/vmutils-amd64-"$vm_version".tar.gz >> $logfile; then
 				die "Could not download needed component...check internet?"
 			fi
-			tar zxvf vmutils-amd64-"$vm_version".tar.gz 2>&1 $logfile
+			tar zxf vmutils-amd64-"$vm_version".tar.gz
 		fi
 	fi
 
-	msg "Checking for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
-	if ! check_command wget; then
-		if ! yum install -y wget; then 
-			die "Could not download needed component...check internet?"
-		fi
-	fi
 
 ### nice to haves ###
 	#will the backup fit on the filesystem (need >2x the size of the /srv directory)
@@ -181,12 +200,12 @@ perform_backup() {
 
 	#pg backup
 	msg "Starting PostgreSQL backup"
-	pg_dump -c -U pmm-managed > "$backup_dir"/postgres/backup.sql
+	run_root "pg_dump -c -U pmm-managed > "$backup_dir"/postgres/backup.sql"
 	msg "Completed PostgreSQL backup"
 
 	#vm backup
 	msg "Starting VictoriaMetrics backup"
-	/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://"$backup_dir"/vm/ -loggerOutput=stdout >> $logfile
+	run_root "/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://"$backup_dir"/vm/ -loggerOutput=stdout"
 	msg "Completed VictoriaMetrics backup"
 
 	#clickhouse Backup
@@ -205,25 +224,25 @@ perform_backup() {
 			/bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
 		fi
 	done
-		mv /srv/clickhouse/shadow "$backup_dir"/clickhouse/"$backup_version"
+		run_root "mv /srv/clickhouse/shadow "$backup_dir"/clickhouse/"$backup_version""
 	msg "Completed Clickhouse backup"
 
 	#support files backup
 	msg "Backing up configuration and supporting files"
 
-	cp -af /srv/alerting "$backup_dir"/folders/
-	cp -af /srv/alertmanager "$backup_dir"/folders/
-	cp -af /srv/grafana "$backup_dir"/folders/
-	cp -af /srv/nginx "$backup_dir"/folders/
-	cp -af /srv/prometheus "$backup_dir"/folders/
-	cp -af /srv/pmm-distribution "$backup_dir"/folders/
+	run_root "cp -af /srv/alerting "$backup_dir"/folders/"
+	run_root "cp -af /srv/alertmanager "$backup_dir"/folders/"
+	run_root "cp -af /srv/grafana "$backup_dir"/folders/"
+	run_root "cp -af /srv/nginx "$backup_dir"/folders/"
+	run_root "cp -af /srv/prometheus "$backup_dir"/folders/"
+	run_root "cp -af /srv/pmm-distribution "$backup_dir"/folders/"
 
 	msg "Completed configuration and supporting files backup"
 
 	msg "Compressing backup artifact"
-	tar -czf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" . >> $logfile
+	run_root "tar -czf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" ."
 	msg "Cleaning up"
-	rm -rf "$backup_dir"
+	run_root "rm -rf "$backup_dir""
 	msg "\nBackup Complete"
 }
 
@@ -235,7 +254,7 @@ perform_restore() {
 
 	#stop pmm-managed locally to restore data
 	msg "Stopping pmm-managed to begin restore"
-	supervisorctl stop pmm-managed nginx &>>$logfile
+	run_root "supervisorctl stop pmm-managed nginx"
 	msg "pmm-managed stopped, restore starting"
 	
 	#pg restore
@@ -245,17 +264,17 @@ perform_restore() {
 
 	#vm restore
 	msg "Starting VictoriaMetrics restore"
-	supervisorctl stop victoriametrics &>>$logfile
-	/tmp/vmrestore-prod -src=fs:///"$restore_from_dir"/vm/ -storageDataPath=/srv/victoriametrics/data &>>$logfile
-	chown -R pmm.pmm /srv/victoriametrics/data
-	supervisorctl start victoriametrics &>>$logfile
+	run_root "supervisorctl stop victoriametrics"
+	run_root "/tmp/vmrestore-prod -src=fs:///"$restore_from_dir"/vm/ -storageDataPath=/srv/victoriametrics/data"
+	run_root "chown -R pmm.pmm /srv/victoriametrics/data"
+	run_root "supervisorctl start victoriametrics"
 	msg "Completed VictiriaMetrics restore"
 	
 
 	#clickhouse restore
 	msg "Starting Clickhouse restore"
 	#stop qan api 
-	supervisorctl stop qan-api2 &>>$logfile
+	run_root "supervisorctl stop qan-api2"
 	#will need to loop through $tables
 	mapfile -t ch_array < <(ls "$restore_from_dir"/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
@@ -279,12 +298,14 @@ perform_restore() {
 			msg "  Restoring $table table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
 			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
-			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && mkdir -p /srv/clickhouse/data/pmm/"$table"/detached/
+			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && run_root "mkdir -p /srv/clickhouse/data/pmm/"$table"/detached/"
 			msg "  Copying files"
 			folder=$(cat "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/increment.txt)
-			cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/pmm/"$table"/* /srv/clickhouse/data/pmm/"$table"/detached/
+			run_root "cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/pmm/"$table"/* /srv/clickhouse/data/pmm/"$table"/detached/"
 			msg "  Gathering partitions"
+			run_root "chmod -R o+rx /srv/clickhouse"
 			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/"$table"/detached/ | cut -d "_" -f1 | uniq)
+			run_root "chmod -R o-rx /srv/clickhouse"
 			for partition in "${partitions[@]}"; do 
 				msg "    Loading partition $partition"
 				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
@@ -298,24 +319,31 @@ perform_restore() {
 	#support files restore
 	msg "Starting configuration and file restore"
 	#$/srv/alerting (root,root)
-	cp -af "$restore_from_dir"/folders/alerting/ /srv/alerting
+	run_root "cp -af "$restore_from_dir"/folders/alerting/ /srv/alerting"
+	run_root "chown -R root.root /srv/alerting"
 	#/srv/alertmanager (pmm,pmm)
-	cp -af "$restore_from_dir"/folders/alertmanager/ /srv/alertmanager	
+	run_root "cp -af "$restore_from_dir"/folders/alertmanager/ /srv/alertmanager"
+	run_root "chown -R pmm.pmm /srv/alertmanager"
 	#/srv/grafana (grafana,grafana)
-	cp -af "$restore_from_dir"/folders/grafana/ /srv/grafana
+	run_root "cp -af "$restore_from_dir"/folders/grafana/ /srv/grafana"
+	run_root "chown -R grafana.grafana /srv/grafana"
 	#/srv/nginx (root,root)
-	cp -af "$restore_from_dir"/folders/nginx/ /srv/nginx
+	run_root "cp -af "$restore_from_dir"/folders/nginx/ /srv/nginx"
+	run_root "chown -R root.root /srv/nginx"
 	#/srv/prometheus (pmm,pmm)
-	cp -af "$restore_from_dir"/folders/prometheus/ /srv/prometheus
+	run_root "cp -af "$restore_from_dir"/folders/prometheus/ /srv/prometheus"
+	run_root "chown -R pmm.pmm /srv/prometheus"
 	#/srv/pmm-distribution (root,root) (optional)
-	cp -af "$restore_from_dir"/folders/pmm-distribution /srv/
+	run_root "cp -af "$restore_from_dir"/folders/pmm-distribution /srv/"
+	run_root "chown -R root.root /srv/pmm-distribution"
 
 	#last step
-	supervisorctl restart grafana nginx pmm-managed &>>$logfile
+	msg "Restarting servies"
+	run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
 	msg "Completed configuration and file restore"
 
 	# cleanup
-	rm -rf "$restore_from_dir"
+	run_root "rm -rf "$restore_from_dir""
 }
 
 main() {
