@@ -14,6 +14,7 @@
 backup_version="pmm_backup_$(date +%Y%m%d_%H%M%S)"
 backup_root="/srv/backups"
 backup_dir=$backup_root/$backup_version
+clickhouse_database="pmm"
 restore=0
 logfile="$backup_root/pmmBackup.log"
 
@@ -216,17 +217,17 @@ perform_backup() {
 	#clickhouse Backup
 
 	msg "Starting Clickhouse backup"
-	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = 'pmm'")
+	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = '"$clickhouse_database"'")
 	for table in "${ch_array[@]}"
 	do
 		if [ "$table" == "schema_migrations" ] ; then
 			msg "  Backing up $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SELECT * from $table" --format CSV > "$backup_dir"/clickhouse/"$table".data
+			/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
+			/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="SELECT * from $table" --format CSV > "$backup_dir"/clickhouse/"$table".data
 		else
 			msg "  Backing up $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
-			/bin/clickhouse-client --host=127.0.0.1 --query "alter table pmm.$table freeze"
+			/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="SHOW CREATE TABLE $table" --format="TabSeparatedRaw" > "$backup_dir"/clickhouse/"$table".sql
+			/bin/clickhouse-client --host=127.0.0.1 --query "alter table $clickhouse_database.$table freeze"
 		fi
 	done
 		run_root "mv /srv/clickhouse/shadow "$backup_dir"/clickhouse/"$backup_version""
@@ -286,14 +287,14 @@ perform_restore() {
 		if [ "$table" == "schema_migrations" ] ; then
 			# schema_migrations only needs SQL replay, other tables need data copies and reattaching files
 			msg "  Restoring $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
-			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
+			/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="drop table if exists $table"
+			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database"
 			# this can be improved as all the data to form this statement is in $table.sql and will 
 			# be a bit more future-proofed if table structure changes
-			cat "$restore_from_dir"/clickhouse/"$table".data | /bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query "INSERT INTO pmm.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
+			cat "$restore_from_dir"/clickhouse/"$table".data | /bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query "INSERT INTO $clickhouse_database.$table SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
 			#check that num rows in == num rows inserted
 			rows_in=$(/bin/wc -l "$restore_from_dir"/clickhouse/"$table".data | cut -d " " -f1)
-			rows_inserted=$(clickhouse-client --host=127.0.0.1 --database "pmm" --query="select count(*) from $table")
+			rows_inserted=$(clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="select count(*) from $table")
 			if [ "$rows_in" == "$rows_inserted" ] ; then 
 				msg "  Successfully restored $table"
 			else
@@ -301,19 +302,19 @@ perform_restore() {
 			fi
 		else
 			msg "  Restoring $table table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="drop table if exists $table"
-			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "pmm"
-			[ ! -d "/srv/clickhouse/data/pmm/$table/detached" ] && run_root "mkdir -p /srv/clickhouse/data/pmm/"$table"/detached/"
+			/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="drop table if exists $table"
+			cat "$restore_from_dir"/clickhouse/"$table".sql | /bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database"
+			[ ! -d "/srv/clickhouse/data/$clickhouse_database/$table/detached" ] && run_root "mkdir -p /srv/clickhouse/data/"$clickhouse_database"/"$table"/detached/"
 			msg "  Copying files"
 			folder=$(cat "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/increment.txt)
-			run_root "cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/pmm/"$table"/* /srv/clickhouse/data/pmm/"$table"/detached/"
+			run_root "cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/"$clickhouse_database"/"$table"/* /srv/clickhouse/data/"$clickhouse_database"/"$table"/detached/"
 			msg "  Gathering partitions"
 			[[ $UID -ne 0 ]] && run_root "chmod -R o+rx /srv/clickhouse"; 
-			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/"$table"/detached/ | cut -d "_" -f1 | uniq)
+			mapfile -t partitions < <(ls /srv/clickhouse/data/"$clickhouse_database"/"$table"/detached/ | cut -d "_" -f1 | uniq)
 			[[ $UID -ne 0 ]] &&run_root "chmod -R o-rx /srv/clickhouse";
 			for partition in "${partitions[@]}"; do 
 				msg "    Loading partition $partition"
-				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
+				/bin/clickhouse-client --host=127.0.0.1 --database "$clickhouse_database" --query="alter table $table attach partition $partition"
 			done
 		fi
 	done
