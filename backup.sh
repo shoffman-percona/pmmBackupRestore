@@ -2,9 +2,7 @@
 
 ####
 # Still NEED
-# get version of PMM being backed up (and restore needs to verify it's being restored to same version or error out
 # Run backups in parallel for speed? have to monitor for all 3 being done before moving on
-# Redirect all output to a log stored outside of backup artifact
 # Do we need to backup pmm logs?  I think no but asking anyway
 # Args and help (assuming running script by itself will backup with all defaults but do we allow overrides? i.e. storage location of backup?
 #
@@ -18,7 +16,14 @@ backup_root="/srv/backups"
 backup_dir=$backup_root/$backup_version
 restore=0
 logfile="$backup_root/pmmBackup.log"
-mkdir -p $backup_root
+
+if [[ $UID -ne 0 ]] ; then
+  sudo mkdir -p $backup_root
+  sudo chown `id -un`.`id -un` $backup_root
+else 
+  mkdir -p $backup_root
+fi
+	
 
 set -Eeuo pipefail
 trap cleanup SIGINT SIGTERM ERR EXIT
