@@ -303,9 +303,9 @@ perform_restore() {
 			folder=$(cat "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/increment.txt)
 			run_root "cp -rlf "$restore_from_dir"/clickhouse/pmm_backup_"$restore"/"$folder"/data/pmm/"$table"/* /srv/clickhouse/data/pmm/"$table"/detached/"
 			msg "  Gathering partitions"
-			run_root "chmod -R o+rx /srv/clickhouse"
+			[[ $UID -ne 0 ]] && run_root "chmod -R o+rx /srv/clickhouse"; 
 			mapfile -t partitions < <(ls /srv/clickhouse/data/pmm/"$table"/detached/ | cut -d "_" -f1 | uniq)
-			run_root "chmod -R o-rx /srv/clickhouse"
+			[[ $UID -ne 0 ]] &&run_root "chmod -R o-rx /srv/clickhouse";
 			for partition in "${partitions[@]}"; do 
 				msg "    Loading partition $partition"
 				/bin/clickhouse-client --host=127.0.0.1 --database "pmm" --query="alter table $table attach partition $partition"
