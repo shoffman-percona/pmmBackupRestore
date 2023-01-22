@@ -16,14 +16,9 @@ backup_root="/srv/backups"
 backup_dir=${backup_root}/${backup_version}
 clickhouse_database="pmm"
 restore=0
+upgrade=false
 logfile="${backup_root}/pmmBackup.log"
 
-if [[ ${UID} -ne 0 ]] ; then
-  sudo mkdir -p ${backup_root}
-  sudo chown "$(id -un)"."$(id -un)" ${backup_root}
-else
-  mkdir -p ${backup_root}
-fi
 
 
 set -Eeuo pipefail
@@ -35,13 +30,16 @@ trap cleanup SIGINT SIGTERM ERR EXIT
 #######################################
 usage() {
   cat <<EOF
-Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-v] [-i] [-t] [-n] [-p]
+Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-v] [-i] [-s] [-r] [-u]
 This tool is used to take online backups and can be used to restore a backup as well.
 Available options:
 -h, --help          Print this help and exit
+-i, --interactive   Interactive mode will prompt user for values instead of assuming defaults ${RED}Not Yet Implemented${NOFORMAT}
 -v, --verbose       Print script debug info
 -r, --restore YYYYMMDD_HHMMSS
        Restore backup with date/time code of YYYYMMDD_HHMMSS to a PMM server of the same version (.tar.gz file must be in ${backup_root} directory)
+-s, --storage	    Choose a different storage location (default: ${backup_root})
+-u, --upgrade       Allow restore to a newer PMM server than the backup was taken from (backup and restore version should be 5 or fewer versions apart)
 EOF
   exit
 }
@@ -55,9 +53,22 @@ parse_params() {
     -h | --help) usage ;;
     -v | --verbose) set -x ;;
 #    -i | --interactive) interactive=1 ;;
+    -s | --storage)
+      storage="${2-}"
+      backup_root="${storage}"
+      backup_dir=${backup_root}/${backup_version}
+      logfile="${backup_root}/pmmBackup.log"
+      msg "${BLUE}Storage override${NOFORMAT} to: ${backup_root}"
+      shift
+      ;;
     -r | --restore)
       restore="${2-}"
+      msg "${BLUE}Restoring${NOFORMAT} ${restore}"
       shift
+      ;;
+    -u | --upgrade)
+      upgrade=true
+      msg "${BLUE}Restore${NOFORMAT} to upgraded instance"
       ;;
     -?*) die "Unknown option: ${1}" ;;
     *) break ;;
@@ -105,9 +116,9 @@ msg() {
 #   writes message to stderr.
 #######################################
 die() {
-  local msg=${1}
+  local message=${1}
   local code=${2-1} # default exit status 1
-  msg "${msg}"
+  msg "${message}"
   exit "${code}"
 }
 
@@ -141,30 +152,43 @@ run_root() {
 ######################################
 check_prereqs() {
 
-	msg "Checking for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
-	if ! check_command wget; then
-		if ! yum install -y wget; then
-			die "Could not download needed component...check internet?"
+	msg "${ORANGE}Checking${NOFORMAT} for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
+	touch ${logfile}
+	# Does backup location exist and will we be able to write to it
+	
+	if [ ! -d ${backup_root} ] ; then 
+		if [[ ${UID} -ne 0 ]] ; then
+		  sudo mkdir -p ${backup_root}
+		  sudo chown "$(id -un)"."$(id -un)" ${backup_root}
+		else
+		  mkdir -p ${backup_root}
 		fi
+	elif [ ! -w ${backup_root} ] ; then 
+		die "${RED}${backup_root} is not writable${NOFORMAT}, please look at permissions for ${id -un}"
 	fi
+	
+	#if ! check_command wget; then
+	#	if ! yum install -y wget; then
+	#		die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
+	#	fi
+	#fi
 
 	if ! check_command pigz; then
 		if ! yum install -y pigz; then
-			die "Could not download needed component...check internet?"
+			die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 		fi
 	fi
 
 	#set version
 	if [ "${restore}" == 0 ] ; then
-		#yum info -q --disablerepo="*source*" pmm-managed | grep -Em1 ^Version | sed 's/.*: //' > ${backup_dir}/pmm_version.txt
 		mkdir -p "${backup_dir}"
 		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > "${backup_dir}"/pmm_version.txt
 
 		if ! check_command /tmp/vmbackup-prod; then
 			cd /tmp
 			vm_version=$(victoriametrics --version | cut -d '-' -f7)
-			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz >> ${logfile}; then
-				die "Could not download needed component...check internet?"
+			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile} ; then
+				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 			fi
 			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz
 		fi
@@ -172,31 +196,90 @@ check_prereqs() {
 	elif [ "${restore}" != 0 ] ; then
 		msg "Extracting Backup Archive"
 		restore_from_dir="${backup_root}/pmm_backup_${restore}"
+		#msg "restore from dir: ${restore_from_dir}"
 		restore_from_file="${backup_root}/pmm_backup_${restore}.tar.gz"
+		#msg "restore from file: ${restore_from_file}"
 		mkdir -p "${restore_from_dir}"
-		tar zxf "${restore}_from_file" -C "${restore_from_dir}"
+		tar zxfm "${restore_from_file}" -C "${restore_from_dir}"
 		backup_pmm_version=$(cat "${restore_from_dir}"/pmm_version.txt)
-		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //')
-		if [ "${backup_pmm_version}" != "${restore}_to_pmm_version" ] ; then
-			die "Cannot restore backup from PMM version ${backup_pmm_version} to PMM version ${restore}_to_pmm_version, install ${backup_pmm_version} on this host and retry."
+		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' | awk -F- '{print $1}')
+		msg "from ${backup_pmm_version} to ${restore_to_pmm_version}"
+		check_version
+		msg "${version_check} for restore action"
+		# case eq: versions equal, just go
+		# case lt: backup from older version of pmm, needs upgrade flag also
+		# case gt: backup from newer version of pmm, not implemented
+		if [[ ${version_check} == "eq" ]]; then 
+			#good to go, do nothing
+			msg "${GREEN}Version Match${NOFORMAT} (${version_check}), proceeding"
+		elif [[ ${version_check} == "lt" ]]; then
+			if $upgrade ; then
+				msg "${GREEN}Proceeding${NOFORMAT} with restore to upgraded version of PMM"
+			else
+				die "${RED}WARNING${NOFORMAT}: You must also pass the upgrade flag to restore to a newer version of PMM"
+			fi
+		elif [[ ${version_check} == "gt" ]] ; then
+			die "${RED}ERROR${NOFORMAT}: Downgrades are not supported, you can only restore to $backup_pmm_version"
 		fi
-
+		
 		if ! check_command /tmp/vmrestore-prod; then
 			cd /tmp
 			vm_version=$(victoriametrics --version | cut -d '-' -f7)
-			if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz >> ${logfile}; then
-				die "Could not download needed component...check internet?"
+			#if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/${vm_version}/vmutils-linux-amd64-${vm_version}.tar.gz >&2 ${logfile}; then
+			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile} ; then
+				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 			fi
-			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz
+			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile}
 		fi
 	fi
 
 
 ### nice to haves ###
 	#will the backup fit on the filesystem (need >2x the size of the /srv directory)
+}
+#############################################
+# Check to see if version backed up is same, 
+# older, newer than version being restored to
+#############################################
+check_version() {
+	if [ ${backup_pmm_version} == ${restore_to_pmm_version} ] ; then
+		#versions match, proceed
+		version_check="eq"
+		return 0
+	fi
+	local IFS=.
+	local i ver1=(${backup_pmm_version}) ver2=(${restore_to_pmm_version})
+	# fill empty fields in ver1 with zeros
+	for ((i=${#ver1[@]}; i<${#ver2[@]}; i++))
+	  do
+	    ver1[i]=0
+	  done
 
+	for ((i=0; i<${#ver1[@]}; i++))
+	do
+	    if [[ -z ${ver2[i]} ]]
+	    then
+		# fill empty fields in ver2 with zeros
+		ver2[i]=0
+	    fi
+	    if ((10#${ver1[i]} < 10#${ver2[i]}))
+	    then
+		version_check="lt"
+		return 0
+	    fi
+	    if ((10#${ver1[i]} > 10#${ver2[i]}))
+	    then
+		version_check="gt"
+		return 0
+	    fi
+	done
+	version_check=false
+	return 0
 
-
+	
+	#	if [ "${backup_pmm_version}" != "${restore}_to_pmm_version" ] ; then
+	#		die "Cannot restore backup from PMM version ${backup_pmm_version} to PMM version ${restore}_to_pmm_version, install ${backup_pmm_version} on this host and retry."
+	#	fi
 }
 
 ######################################
@@ -206,23 +289,23 @@ perform_backup() {
 
 
 	#setup env
-	msg "Creating backup directory structure"
+	msg "${ORANGE}Creating${NOFORMAT} backup directory structure"
 	mkdir -p "${backup_root}"/"${backup_version}"/{postgres,vm,clickhouse,folders}
 
 
 	#pg backup
-	msg "Starting PostgreSQL backup"
+	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL backup"
 	run_root "pg_dump -c -U pmm-managed > \"${backup_dir}\"/postgres/backup.sql"
-	msg "Completed PostgreSQL backup"
+	msg "${GREEN}Completed${NOFORMAT} PostgreSQL backup"
 
 	#vm backup
-	msg "Starting VictoriaMetrics backup"
+	msg "${ORANGE}Starting${NOFORMAT} VictoriaMetrics backup"
 	run_root "/tmp/vmbackup-prod --storageDataPath=/srv/victoriametrics/data -snapshot.createURL=http://localhost:9090/prometheus/snapshot/create -dst=fs://\"${backup_dir}\"/vm/ -loggerOutput=stdout"
-	msg "Completed VictoriaMetrics backup"
+	msg "${GREEN}Completed${NOFORMAT} VictoriaMetrics backup"
 
 	#clickhouse Backup
 
-	msg "Starting Clickhouse backup"
+	msg "${ORANGE}Starting${NOFORMAT} Clickhouse backup"
 	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = '"${clickhouse_database}"'")
 	for table in "${ch_array[@]}"
 	do
@@ -237,10 +320,10 @@ perform_backup() {
 		fi
 	done
 		run_root "mv /srv/clickhouse/shadow \"${backup_dir}\"/clickhouse/\"${backup_version}\""
-	msg "Completed Clickhouse backup"
+	msg "${GREEN}Completed${NOFORMAT} Clickhouse backup"
 
 	#support files backup
-	msg "Backing up configuration and supporting files"
+	msg "${ORANGE}Starting${NOFORMAT} configuration and supporting files backup"
 
 	run_root "cp -af /srv/alerting \"${backup_dir}\"/folders/"
 	run_root "cp -af /srv/alertmanager \"${backup_dir}\"/folders/"
@@ -249,13 +332,18 @@ perform_backup() {
 	run_root "cp -af /srv/prometheus \"${backup_dir}\"/folders/"
 	run_root "cp -af /srv/pmm-distribution \"${backup_dir}\"/folders/"
 
-	msg "Completed configuration and supporting files backup"
+	msg "${GREEN}Completed${NOFORMAT} configuration and supporting files backup"
 
-	msg "Compressing backup artifact"
-	run_root "tar -cf "$backup_root"/"$backup_version".tar.gz --use-compress-program=pigz -C "$backup_dir" ."
-	msg "Cleaning up"
+	msg "${ORANGE}Compressing${NOFORMAT} backup artifact"
+	cpus=`cat /proc/cpuinfo | grep processor | wc -l`
+	[ ${cpus} -eq 1 ] && use_cpus=${cpus} || use_cpus=$((${cpus}/2))
+	#msg "limiting to ${use_cpus}"
+	#run_root "tar -cf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" ."
+	#run_root "tar --use-compress-program=\"pigz -5 -p${use_cpus}\" -cf ${backup_root}/${backup_version}.tar.gz -C ${backup_dir} ."
+	run_root "tar -cf - ${backup_dir} | nice pigz -p ${use_cpus} > ${backup_root}/${backup_version}.tar.gz "
+	msg " Cleaning up"
 	run_root "rm -rf \"${backup_dir}\""
-	msg "\nBackup Complete"
+	msg "\n${GREEN}SUCCESS${NOFORMAT}: Backup Complete"
 }
 
 
@@ -265,26 +353,26 @@ perform_backup() {
 perform_restore() {
 
 	#stop pmm-managed locally to restore data
-	msg "Stopping pmm-managed to begin restore"
+	msg "${ORANGE}Stopping${NOFORMAT} pmm-managed to begin restore"
 	run_root "supervisorctl stop pmm-managed nginx"
-	msg "pmm-managed stopped, restore starting"
+	msg "  pmm-managed stopped, restore starting"
 	
 	#pg restore
-	msg "Starting PostgreSQL restore"
+	msg "${ORANGE}Starting{$NOFORMAT} PostgreSQL restore"
 	psql -U pmm-managed -f "${restore_from_dir}"/postgres/backup.sql &>>${logfile}
-	msg "Completed PostgreSQL restore"
+	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
 	#vm restore
-	msg "Starting VictoriaMetrics restore"
+	msg "${ORANGE}Starting${NOFORMAT} VictoriaMetrics restore"
 	run_root "supervisorctl stop victoriametrics"
 	run_root "/tmp/vmrestore-prod -src=fs:///\"${restore_from_dir}\"/vm/ -storageDataPath=/srv/victoriametrics/data"
 	run_root "chown -R pmm.pmm /srv/victoriametrics/data"
 	run_root "supervisorctl start victoriametrics"
-	msg "Completed VictiriaMetrics restore"
+	msg "${GREEN}Completed${NOFORMAT} VictoriaMetrics restore"
 	
 
 	#clickhouse restore
-	msg "Starting Clickhouse restore"
+	msg "${ORANGE}Starting${NOFORMAT} Clickhouse restore"
 	#stop qan api
 	run_root "supervisorctl stop qan-api2"
 	#will need to loop through ${table}
@@ -313,7 +401,11 @@ perform_restore() {
 			[ ! -d "/srv/clickhouse/data/${clickhouse_database}/${table}/detached" ] && run_root "mkdir -p /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			msg "  Copying files"
 			folder=$(cat "${restore_from_dir}"/clickhouse/pmm_backup_"${restore}"/increment.txt)
-			run_root "cp -rlf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
+			if [ $(stat -c %d "${backup_root}") = $(stat -c %D "/srv/clickhouse") ]; then
+				run_root "cp -rlf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
+			else 
+				run_root "cp -rf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
+			fi
 			msg "  Gathering partitions"
 			[[ ${UID} -ne 0 ]] && run_root "chmod -R o+rx /srv/clickhouse";
 			mapfile -t partitions < <(ls /srv/clickhouse/data/"${clickhouse_database}"/"${table}"/detached/ | cut -d "_" -f1 | uniq)
@@ -326,52 +418,62 @@ perform_restore() {
 	done
 
 
-	msg "Completed Clickhouse restore"
+	msg "${GREEN}Completed${NOFORMAT} Clickhouse restore"
 
 	#support files restore
-	msg "Starting configuration and file restore"
+	msg "${ORANGE}Starting${NOFORMAT} configuration and file restore"
 	#/srv/alerting (root,root)
+	run_root "rm -rf /srv/alerting"
 	run_root "cp -af \"${restore_from_dir}\"/folders/alerting/ /srv/alerting"
 	run_root "chown -R root.root /srv/alerting"
 	#/srv/alertmanager (pmm,pmm)
+	run_root "rm -rf /srv/alertmanager"
 	run_root "cp -af \"${restore_from_dir}\"/folders/alertmanager/ /srv/alertmanager"
 	run_root "chown -R pmm.pmm /srv/alertmanager"
 	#/srv/grafana (grafana,grafana)
+	run_root "rm -rf /srv/grafana"
 	run_root "cp -af \"${restore_from_dir}\"/folders/grafana/ /srv/grafana"
 	run_root "chown -R grafana.grafana /srv/grafana"
 	#/srv/nginx (root,root)
+	run_root "rm -rf /srv/nginx"
 	run_root "cp -af \"${restore_from_dir}\"/folders/nginx/ /srv/nginx"
 	run_root "chown -R root.root /srv/nginx"
 	#/srv/prometheus (pmm,pmm)
+	run_root "rm -rf /srv/prometheus"
 	run_root "cp -af \"${restore_from_dir}\"/folders/prometheus/ /srv/prometheus"
 	run_root "chown -R pmm.pmm /srv/prometheus"
 	#/srv/pmm-distribution (root,root) (optional)
+	run_root "rm -f /srv/pmm-distribution"
 	run_root "cp -af \"${restore_from_dir}\"/folders/pmm-distribution /srv/"
 	run_root "chown -R root.root /srv/pmm-distribution"
 
 	#last step
-	msg "Restarting servies"
+		
+
+	msg "  Restarting servies"
+	if ${upgrade} ; then 
+		run_root "supervisorctl start pmm-update-perform-init"
+	fi
 	run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
-	msg "Completed configuration and file restore"
+	msg "${GREEN}Completed${NOFORMAT} configuration and file restore"
 
 	# cleanup
 	run_root "rm -rf \"${restore_from_dir}\""
 }
 
 main() {
-	setup_colors
+	check_prereqs
 	if [ "${restore}" != 0 ]; then
 		#do restore stuff here
 		msg "Restoring backup pmm_backup_${restore}.tar.gz"
-		check_prereqs
 		perform_restore
 	else
-		check_prereqs
 		perform_backup
 	fi
 	
 }
 
+setup_colors
 parse_params "${@}"
 main
 die "Thank you for using the PMM Backup Tool!" 0
