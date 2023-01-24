@@ -144,7 +144,7 @@ run_root() {
       die "${RED}ERROR: root rights needed to run \"${*}\" command ${NOFORMAT}"
     fi
   fi
-  ${sh} "${@}" &>>${logfile}
+  ${sh} "${@}" &>>"${logfile}"
 }
 
 ######################################
@@ -153,18 +153,18 @@ run_root() {
 check_prereqs() {
 
 	msg "${ORANGE}Checking${NOFORMAT} for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
-	touch ${logfile}
+	touch "${logfile}"
 	# Does backup location exist and will we be able to write to it
 	
-	if [ ! -d ${backup_root} ] ; then 
+	if [ ! -d "${backup_root}" ] ; then 
 		if [[ ${UID} -ne 0 ]] ; then
-		  sudo mkdir -p ${backup_root}
-		  sudo chown "$(id -un)"."$(id -un)" ${backup_root}
+		  sudo mkdir -p "${backup_root}"
+		  sudo chown "$(id -un)"."$(id -un)" "${backup_root}"
 		else
-		  mkdir -p ${backup_root}
+		  mkdir -p "${backup_root}"
 		fi
-	elif [ ! -w ${backup_root} ] ; then 
-		die "${RED}${backup_root} is not writable${NOFORMAT}, please look at permissions for ${id -un}"
+	elif [ ! -w "${backup_root}" ] ; then 
+		die "${RED}${backup_root} is not writable${NOFORMAT}, please look at permissions for $(id -un)"
 	fi
 	
 	#if ! check_command wget; then
@@ -187,7 +187,7 @@ check_prereqs() {
 		if ! check_command /tmp/vmbackup-prod; then
 			cd /tmp
 			vm_version=$(victoriametrics --version | cut -d '-' -f7)
-			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile} ; then
+			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}" ; then
 				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 			fi
 			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz
@@ -226,10 +226,10 @@ check_prereqs() {
 			cd /tmp
 			vm_version=$(victoriametrics --version | cut -d '-' -f7)
 			#if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/${vm_version}/vmutils-linux-amd64-${vm_version}.tar.gz >&2 ${logfile}; then
-			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile} ; then
+			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}" ; then
 				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 			fi
-			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz &>> ${logfile}
+			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}"
 		fi
 	fi
 
@@ -242,7 +242,7 @@ check_prereqs() {
 # older, newer than version being restored to
 #############################################
 check_version() {
-	if [ ${backup_pmm_version} == ${restore_to_pmm_version} ] ; then
+	if [ "${backup_pmm_version}" == "${restore_to_pmm_version}" ] ; then
 		#versions match, proceed
 		version_check="eq"
 		return 0
@@ -335,7 +335,7 @@ perform_backup() {
 	msg "${GREEN}Completed${NOFORMAT} configuration and supporting files backup"
 
 	msg "${ORANGE}Compressing${NOFORMAT} backup artifact"
-	cpus=`cat /proc/cpuinfo | grep processor | wc -l`
+	cpus=$(cat /proc/cpuinfo | grep processor | wc -l)
 	[ ${cpus} -eq 1 ] && use_cpus=${cpus} || use_cpus=$((${cpus}/2))
 	#msg "limiting to ${use_cpus}"
 	#run_root "tar -cf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" ."
@@ -359,7 +359,7 @@ perform_restore() {
 	
 	#pg restore
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL restore"
-	psql -U pmm-managed -f "${restore_from_dir}"/postgres/backup.sql &>>${logfile}
+	psql -U pmm-managed -f "${restore_from_dir}"/postgres/backup.sql &>>"${logfile}"
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
 	#vm restore
