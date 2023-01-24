@@ -295,7 +295,7 @@ perform_backup() {
 
 	#pg backup
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL backup"
-	run_root "pg_dump -c -U pmm-managed > \"${backup_dir}\"/postgres/backup.sql"
+	run_root "pg_dump -c -C -U pmm-managed > \"${backup_dir}\"/postgres/backup.sql"
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL backup"
 
 	#vm backup
@@ -340,7 +340,7 @@ perform_backup() {
 	#msg "limiting to ${use_cpus}"
 	#run_root "tar -cf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" ."
 	#run_root "tar --use-compress-program=\"pigz -5 -p${use_cpus}\" -cf ${backup_root}/${backup_version}.tar.gz -C ${backup_dir} ."
-	run_root "tar -cf - ${backup_dir} | nice pigz -p ${use_cpus} > ${backup_root}/${backup_version}.tar.gz "
+	run_root "tar -C ${backup_dir} -cf - . | nice pigz -p ${use_cpus} > ${backup_root}/${backup_version}.tar.gz "
 	msg " Cleaning up"
 	run_root "rm -rf \"${backup_dir}\""
 	msg "\n${GREEN}SUCCESS${NOFORMAT}: Backup Complete"
@@ -358,7 +358,7 @@ perform_restore() {
 	msg "  pmm-managed stopped, restore starting"
 	
 	#pg restore
-	msg "${ORANGE}Starting{$NOFORMAT} PostgreSQL restore"
+	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL restore"
 	psql -U pmm-managed -f "${restore_from_dir}"/postgres/backup.sql &>>${logfile}
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
@@ -452,9 +452,10 @@ perform_restore() {
 
 	msg "  Restarting servies"
 	if ${upgrade} ; then 
-		run_root "supervisorctl start pmm-update-perform-init"
+		run_root "systemctl restart supervisord"
+	else
+		run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
 	fi
-	run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
 	msg "${GREEN}Completed${NOFORMAT} configuration and file restore"
 
 	# cleanup
