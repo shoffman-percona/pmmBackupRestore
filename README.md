@@ -21,8 +21,8 @@ The same script can be used to restore the data taken from teh backup process an
 * run the restore `/path/to/backup.sh --restore YYYYMMDD_HHMMSS` (where the YYYYMMDD_HHMMSS comes from the backup file you wish to restore in the format pmm_backup_YYYYMMDD_HHMMSS.tar.gz)
 
 You should know:
-* You can only restore to the same PMM version the backup was taken from
+* Restore to a newer version of PMM is possible but this was really meant for Disaster Recovery
 * You will need at least 2x the amount of space to extract the backup artifact and restore the data
-* The PMM Server will shut down services to prevent any metrics ingestion while restoring the backup
+* The PMM Server will shut down services to prevent any metrics ingestion while restoring the backup (upgrade to PMM 2.33.0 or greater and metrics will cache at the client while this his happening!) 
 * If you're restoring to a remote server (in a DR scenario), new metrics will not start appearing until clients are pointed to the new server
 * The home dashboard will not show the correct client count as this is based off of reporting nodes and not just registrations, you can verify data restored by looking at Inventory or looking at any of the technology dashboards with the time range set to a window from when the backup was taken i.e. a 2 day old backup would need the time range set to at least 'last 3 days' to see the metrics.  
