@@ -1,5 +1,5 @@
 # pmmBackupRestore
-The PMM Backup and Restore script is designed for anyone that wants to take full backups of their PMM servers configuration and metrics data as well as be able to easily restore the data in the event of a disaster or failed upgrade.  It is designed to work while your PMM server is running so no need to stop PMM to take backups. 
+The PMM Backup and Restore script is designed for anyone that wants to take full backups of their PMM servers configuration and metrics data as well as be able to easily restore the data in the event of a disaster or failed upgrade.  It is designed to work while your PMM server is running so no need to stop PMM to take backups. All options available with  `path/to/backup.sh --help`
 
 # How to run - Backup
 Running the script is as simple as downloading the backup.sh script, storing it somewhere inside your docker container, AMI, or OVF and running by hand or as a nightly cron job. 
