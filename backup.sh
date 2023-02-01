@@ -166,12 +166,6 @@ check_prereqs() {
 	elif [ ! -w "${backup_root}" ] ; then 
 		die "${RED}${backup_root} is not writable${NOFORMAT}, please look at permissions for $(id -un)"
 	fi
-	
-	#if ! check_command wget; then
-	#	if ! yum install -y wget; then
-	#		die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
-	#	fi
-	#fi
 
 	if ! check_command pigz; then
 		if ! yum install -y pigz; then
@@ -185,16 +179,11 @@ check_prereqs() {
 		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > "${backup_dir}"/pmm_version.txt
 
 		if ! check_command /tmp/vmbackup-prod; then
-			cd /tmp
-			vm_version=$(victoriametrics --version | cut -d '-' -f7)
-			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}" ; then
-				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
-			fi
-			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz
+			get_vm
 		fi
 
 	elif [ "${restore}" != 0 ] ; then
-		msg "Extracting Backup Archive"
+		msg "  Extracting Backup Archive"
 		restore_from_dir="${backup_root}/pmm_backup_${restore}"
 		#msg "restore from dir: ${restore_from_dir}"
 		restore_from_file="${backup_root}/pmm_backup_${restore}.tar.gz"
@@ -203,9 +192,9 @@ check_prereqs() {
 		tar zxfm "${restore_from_file}" -C "${restore_from_dir}"
 		backup_pmm_version=$(cat "${restore_from_dir}"/pmm_version.txt)
 		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' | awk -F- '{print $1}')
-		msg "from ${backup_pmm_version} to ${restore_to_pmm_version}"
-		check_version
-		msg "${version_check} for restore action"
+		#msg "from ${backup_pmm_version} to ${restore_to_pmm_version}"
+		check_version "${backup_pmm_version}" "${restore_to_pmm_version}"
+		#msg "${version_check} for restore action"
 		# case eq: versions equal, just go
 		# case lt: backup from older version of pmm, needs upgrade flag also
 		# case gt: backup from newer version of pmm, not implemented
@@ -223,13 +212,7 @@ check_prereqs() {
 		fi
 		
 		if ! check_command /tmp/vmrestore-prod; then
-			cd /tmp
-			vm_version=$(victoriametrics --version | cut -d '-' -f7)
-			#if ! wget https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/${vm_version}/vmutils-linux-amd64-${vm_version}.tar.gz >&2 ${logfile}; then
-			if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/"${vm_version}"/vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}" ; then
-				die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
-			fi
-			tar zxf vmutils-linux-amd64-"${vm_version}".tar.gz &>> "${logfile}"
+			get_vm
 		fi
 	fi
 
@@ -237,18 +220,45 @@ check_prereqs() {
 ### nice to haves ###
 	#will the backup fit on the filesystem (need >2x the size of the /srv directory)
 }
+
+#####################################################
+# Do a version check to see if victoriametrics 
+# utils are from before windows/linux filename
+# designation was added and download as appropriate
+#####################################################
+
+get_vm() {
+	cd /tmp
+	vm_version=$(victoriametrics --version | cut -d '-' -f7 | sed 's/v//')
+	check_version "${vm_version}" "1.78.1"
+	if [[ ${version_check} == "eq" || ${version_check} == "lt" ]] ; then
+		msg "  Old Format location"
+		file_name="vmutils-amd64-v${vm_version}.tar.gz"
+	elif [[ ${version_check} == "gt" ]]; then
+		file_name="vmutils-linux-amd64-v${vm_version}.tar.gz"
+	fi
+	msg "  Downloading https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${vm_version}/${file_name}"
+	if ! curl -s -L -O https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v"${vm_version}"/"${file_name}" &>> "${logfile}" ; then
+		die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
+	fi
+	tar zxf "${file_name}"
+}
+
 #############################################
 # Check to see if version backed up is same, 
 # older, newer than version being restored to
 #############################################
 check_version() {
-	if [ "${backup_pmm_version}" == "${restore_to_pmm_version}" ] ; then
+	#reset version_check to nothing for reuse
+	version_check=false
+	msg "  Comparing version ${1} to ${2}"
+	if [ "${1}" == "${2}" ] ; then
 		#versions match, proceed
 		version_check="eq"
 		return 0
 	fi
 	local IFS=.
-	local i ver1=(${backup_pmm_version}) ver2=(${restore_to_pmm_version})
+	local i ver1=(${1}) ver2=(${2})
 	# fill empty fields in ver1 with zeros
 	for ((i=${#ver1[@]}; i<${#ver2[@]}; i++))
 	  do
@@ -341,7 +351,7 @@ perform_backup() {
 	#run_root "tar -cf "$backup_root"/"$backup_version".tar.gz -C "$backup_dir" ."
 	#run_root "tar --use-compress-program=\"pigz -5 -p${use_cpus}\" -cf ${backup_root}/${backup_version}.tar.gz -C ${backup_dir} ."
 	run_root "tar -C ${backup_dir} -cf - . | nice pigz -p ${use_cpus} > ${backup_root}/${backup_version}.tar.gz "
-	msg " Cleaning up"
+	msg "  Cleaning up"
 	run_root "rm -rf \"${backup_dir}\""
 	msg "\n${GREEN}SUCCESS${NOFORMAT}: Backup Complete"
 }
@@ -466,7 +476,7 @@ main() {
 	check_prereqs
 	if [ "${restore}" != 0 ]; then
 		#do restore stuff here
-		msg "Restoring backup pmm_backup_${restore}.tar.gz"
+		msg "  Restoring backup pmm_backup_${restore}.tar.gz"
 		perform_restore
 	else
 		perform_backup
