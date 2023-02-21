@@ -363,13 +363,14 @@ perform_backup() {
 perform_restore() {
 
 	#stop pmm-managed locally to restore data
-	msg "${ORANGE}Stopping${NOFORMAT} pmm-managed to begin restore"
-	run_root "supervisorctl stop pmm-managed nginx"
-	msg "  pmm-managed stopped, restore starting"
+	msg "${ORANGE}Stopping${NOFORMAT} services to begin restore"
+	run_root "supervisorctl stop alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
+	sleep 5
+	msg "  Services stopped, restore starting"
 	
 	#pg restore
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL restore"
-	psql -U pmm-managed -f "${restore_from_dir}"/postgres/backup.sql &>>"${logfile}"
+	psql -U postgres -f "${restore_from_dir}"/postgres/backup.sql &>>"${logfile}"
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
 	#vm restore
