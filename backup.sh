@@ -385,7 +385,7 @@ perform_restore() {
 	#clickhouse restore
 	msg "${ORANGE}Starting${NOFORMAT} Clickhouse restore"
 	#stop qan api
-	run_root "supervisorctl stop qan-api2"
+	#run_root "supervisorctl stop qan-api2"
 	#will need to loop through ${table}
 	mapfile -t ch_array < <(ls "${restore_from_dir}"/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
