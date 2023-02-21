@@ -463,9 +463,9 @@ perform_restore() {
 
 	msg "  Restarting servies"
 	if ${upgrade} ; then 
-		run_root "supervisrctl reload"
+		run_root "supervisorctl reload"
 		sleep 10
-		run_root "supervisrctl reload"
+		run_root "supervisorctl reload"
 	else
 		#run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
 		run_root "supervisorctl start alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
