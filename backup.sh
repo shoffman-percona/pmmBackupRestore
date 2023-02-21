@@ -468,7 +468,7 @@ perform_restore() {
 		run_root "supervisrctl reload"
 	else
 		#run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
-		run_root "supervisorctl stop alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
+		run_root "supervisorctl start alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
 	fi
 	msg "${GREEN}Completed${NOFORMAT} configuration and file restore"
 
