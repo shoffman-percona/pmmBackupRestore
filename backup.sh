@@ -15,6 +15,7 @@ backup_version="pmm_backup_$(date +%Y%m%d_%H%M%S)"
 backup_root="/srv/backups"
 backup_dir=${backup_root}/${backup_version}
 clickhouse_database="pmm"
+pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' | awk -F- '{print $1}')
 restore=0
 upgrade=false
 logfile="${backup_root}/pmmBackup.log"
@@ -176,7 +177,7 @@ check_prereqs() {
 	#set version
 	if [ "${restore}" == 0 ] ; then
 		mkdir -p "${backup_dir}"
-		pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' > "${backup_dir}"/pmm_version.txt
+		echo ${pmm_version} > "${backup_dir}"/pmm_version.txt
 
 		if ! check_command /tmp/vmbackup-prod; then
 			get_vm
@@ -191,7 +192,7 @@ check_prereqs() {
 		mkdir -p "${restore_from_dir}"
 		tar zxfm "${restore_from_file}" -C "${restore_from_dir}"
 		backup_pmm_version=$(cat "${restore_from_dir}"/pmm_version.txt)
-		restore_to_pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' | awk -F- '{print $1}')
+		restore_to_pmm_version=${pmm_version}		
 		#msg "from ${backup_pmm_version} to ${restore_to_pmm_version}"
 		check_version "${backup_pmm_version}" "${restore_to_pmm_version}"
 		#msg "${version_check} for restore action"
@@ -251,7 +252,7 @@ get_vm() {
 check_version() {
 	#reset version_check to nothing for reuse
 	version_check=false
-	msg "  Comparing version ${1} to ${2}"
+	#msg "  Comparing version ${1} to ${2}"
 	if [ "${1}" == "${2}" ] ; then
 		#versions match, proceed
 		version_check="eq"
@@ -306,6 +307,11 @@ perform_backup() {
 	#pg backup
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL backup"
 	run_root "pg_dump -c -C -U pmm-managed > \"${backup_dir}\"/postgres/backup.sql"
+	check_version "${pmm_version}" "2.39.0"
+	if [[ ${version_check} == "gt" ]]; then
+	run_root "pg_dump -c -C -U grafana > \"${backup_dir}\"/postgres/grafana.sql"
+	fi
+	
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL backup"
 
 	#vm backup
@@ -317,6 +323,8 @@ perform_backup() {
 
 	msg "${ORANGE}Starting${NOFORMAT} Clickhouse backup"
 	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = '"${clickhouse_database}"'")
+	#get engine type
+	clickhouse_engine=$(/bin/clickhouse-client --host=127.0.0.1 --query "select engine from system.databases where name='"${clickhouse_database}"'")
 	for table in "${ch_array[@]}"
 	do
 		if [ "${table}" == "schema_migrations" ] ; then
@@ -327,9 +335,22 @@ perform_backup() {
 			msg "  Backing up ${table} table"
 			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="SHOW CREATE TABLE ${table}" --format="TabSeparatedRaw" > "${backup_dir}"/clickhouse/"${table}".sql
 			/bin/clickhouse-client --host=127.0.0.1 --query "alter table ${clickhouse_database}.${table} freeze"
+			if [ ${clickhouse_engine} == "Ordinary" ] ; then
+				msg "${ORANGE}    INFO: ${NOFORMAT}Engine = ${clickhouse_engine}"
+				run_root "mv /srv/clickhouse/shadow \"${backup_dir}\"/clickhouse/\"${backup_version}\""
+			elif [ ${clickhouse_engine} == "Atomic" ] ; then
+				msg "${ORANGE}    INFO: ${NOFORMAT}Engine = ${clickhouse_engine}"
+				increment=$(cat /srv/clickhouse/shadow/increment.txt)
+				table_uuid=$(/bin/clickhouse-client --host=127.0.0.1 --query "select uuid from system.tables where database = '"${clickhouse_database}"' and name = '"${table}"'")
+				prefix=$(echo "${table_uuid}" | cut -c1-3)
+				run_root "mkdir -p \"${backup_dir}\"/clickhouse/\"${backup_version}\"/\"${increment}\"/data/\"${clickhouse_database}\"/\"${table}\""
+				run_root "mv /srv/clickhouse/shadow/increment.txt \"${backup_dir}\"/clickhouse/\"${backup_version}\""
+				run_root "mv /srv/clickhouse/shadow/\"${increment}\"/store/\"${prefix}\"/\"${table_uuid}\"/* \"${backup_dir}\"/clickhouse/\"${backup_version}\"/\"${increment}\"/data/\"${clickhouse_database}\"/\"${table}\""
+				run_root "rm -rf /srv/clickhouse/shadow/"
+			fi
 		fi
 	done
-		run_root "mv /srv/clickhouse/shadow \"${backup_dir}\"/clickhouse/\"${backup_version}\""
+	
 	msg "${GREEN}Completed${NOFORMAT} Clickhouse backup"
 
 	#support files backup
@@ -371,6 +392,10 @@ perform_restore() {
 	#pg restore
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL restore"
 	psql -U postgres -f "${restore_from_dir}"/postgres/backup.sql &>>"${logfile}"
+	check_version "${backup_pmm_version}" "2.39.0"
+	if [[ ${version_check} == "gt" ]]; then
+	psql -U postgres -f "${restore_from_dir}"/postgres/grafana.sql &>>"${logfile}"
+	fi
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
 	#vm restore
@@ -412,6 +437,8 @@ perform_restore() {
 			[ ! -d "/srv/clickhouse/data/${clickhouse_database}/${table}/detached" ] && run_root "mkdir -p /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			msg "  Copying files"
 			folder=$(cat "${restore_from_dir}"/clickhouse/pmm_backup_"${restore}"/increment.txt)
+			#if the source and destination folders are on the same physical drive, we can go MUCH faster by creating hard-links
+			#if not, we have to copy the files the slow way
 			if [ $(stat -c %d "${backup_root}") = $(stat -c %D "/srv/clickhouse") ]; then
 				run_root "cp -rlf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			else 
@@ -461,7 +488,7 @@ perform_restore() {
 	#last step
 		
 
-	msg "  Restarting servies"
+	msg "  Restarting services"
 	if ${upgrade} ; then 
 		run_root "supervisorctl reload"
 		sleep 10
