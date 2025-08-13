@@ -149,11 +149,27 @@ run_root() {
 }
 
 ######################################
+# Check PMM version compatibility
+######################################
+check_pmm_version() {
+	msg "${ORANGE}Checking${NOFORMAT} PMM version compatibility..."
+	
+	# Extract major version number
+	major_version=$(echo "${pmm_version}" | cut -d'.' -f1)
+	
+	if [ "${major_version}" -lt 3 ]; then
+		die "${RED}ERROR${NOFORMAT}: This backup tool requires PMM 3.0.0 or higher. Current version: ${pmm_version}. Please use the pmm-2.0 branch for older PMM versions."
+	fi
+	
+	msg "${GREEN}Version Check${NOFORMAT}: PMM ${pmm_version} is compatible"
+}
+
+######################################
 # Verify and satisfy prerequisites
 ######################################
 check_prereqs() {
 
-	msg "${ORANGE}Checking${NOFORMAT} for/installing prerequisite software...an internet connection is requried or you must install missing softare manually"
+	msg "${ORANGE}Checking${NOFORMAT} for/installing prerequisite software...an internet connection is required or you must install missing software manually"
 	touch "${logfile}"
 	# Does backup location exist and will we be able to write to it
 	
@@ -186,16 +202,19 @@ check_prereqs() {
 	elif [ "${restore}" != 0 ] ; then
 		msg "  Extracting Backup Archive"
 		restore_from_dir="${backup_root}/pmm_backup_${restore}"
-		#msg "restore from dir: ${restore_from_dir}"
 		restore_from_file="${backup_root}/pmm_backup_${restore}.tar.gz"
-		#msg "restore from file: ${restore_from_file}"
 		mkdir -p "${restore_from_dir}"
 		tar zxfm "${restore_from_file}" -C "${restore_from_dir}"
 		backup_pmm_version=$(cat "${restore_from_dir}"/pmm_version.txt)
-		restore_to_pmm_version=${pmm_version}		
-		#msg "from ${backup_pmm_version} to ${restore_to_pmm_version}"
+		restore_to_pmm_version=${pmm_version}
+		
+		# Check that backup is from PMM 3.0+
+		backup_major_version=$(echo "${backup_pmm_version}" | cut -d'.' -f1)
+		if [ "${backup_major_version}" -lt 3 ]; then
+			die "${RED}ERROR${NOFORMAT}: Cannot restore backup from PMM ${backup_pmm_version}. This tool only supports PMM 3.0+ backups. Please use the pmm-2.0 branch for older backups."
+		fi
+		
 		check_version "${backup_pmm_version}" "${restore_to_pmm_version}"
-		#msg "${version_check} for restore action"
 		# case eq: versions equal, just go
 		# case lt: backup from older version of pmm, needs upgrade flag also
 		# case gt: backup from newer version of pmm, not implemented
@@ -504,6 +523,7 @@ perform_restore() {
 }
 
 main() {
+	check_pmm_version
 	check_prereqs
 	if [ "${restore}" != 0 ]; then
 		#do restore stuff here
