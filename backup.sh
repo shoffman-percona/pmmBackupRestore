@@ -377,9 +377,6 @@ perform_backup() {
 	if [ -d "/srv/alerting" ]; then
 		run_root "cp -af /srv/alerting \"${backup_dir}\"/folders/"
 	fi
-	if [ -d "/srv/alertmanager" ]; then
-		run_root "cp -af /srv/alertmanager \"${backup_dir}\"/folders/"
-	fi
 	if [ -d "/srv/grafana" ]; then
 		run_root "cp -af /srv/grafana \"${backup_dir}\"/folders/"
 	fi
@@ -389,10 +386,7 @@ perform_backup() {
 	if [ -d "/srv/prometheus" ]; then
 		run_root "cp -af /srv/prometheus \"${backup_dir}\"/folders/"
 	fi
-	if [ -d "/srv/pmm-distribution" ]; then
-		run_root "cp -af /srv/pmm-distribution \"${backup_dir}\"/folders/"
-	fi
-
+	
 	msg "${GREEN}Completed${NOFORMAT} configuration and supporting files backup"
 
 	msg "${ORANGE}Compressing${NOFORMAT} backup artifact"
@@ -415,7 +409,7 @@ perform_restore() {
 
 	#stop pmm-managed locally to restore data
 	msg "${ORANGE}Stopping${NOFORMAT} services to begin restore"
-	run_root "supervisorctl stop alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
+	run_root "supervisorctl stop grafana nginx pmm-agent pmm-managed qan-api2"
 	sleep 5
 	msg "  Services stopped, restore starting"
 	
@@ -436,8 +430,7 @@ perform_restore() {
 
 	#clickhouse restore
 	msg "${ORANGE}Starting${NOFORMAT} Clickhouse restore"
-	#stop qan api
-	#run_root "supervisorctl stop qan-api2"
+
 	#will need to loop through ${table}
 	mapfile -t ch_array < <(ls "${restore_from_dir}"/clickhouse | grep .sql | sed "s/\.sql//")
 	for table in "${ch_array[@]}"; do
@@ -468,8 +461,10 @@ perform_restore() {
 			#if not, we have to copy the files the slow way
 			if [ $(stat -c %d "${backup_root}") = $(stat -c %D "/srv/clickhouse") ]; then
 				run_root "cp -rlf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
+				run_root "chown -R pmm.pmm /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			else 
 				run_root "cp -rf \"${restore_from_dir}\"/clickhouse/pmm_backup_\"${restore}\"/\"$folder\"/data/\"${clickhouse_database}\"/\"${table}\"/* /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
+				run_root "chown -R pmm.pmm /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			fi
 			msg "  Gathering partitions"
 			[[ ${UID} -ne 0 ]] && run_root "chmod -R o+rx /srv/clickhouse";
@@ -491,10 +486,6 @@ perform_restore() {
 	run_root "rm -rf /srv/alerting"
 	run_root "cp -af \"${restore_from_dir}\"/folders/alerting/ /srv/alerting"
 	run_root "chown -R pmm.pmm /srv/alerting"
-	#/srv/alertmanager (pmm,pmm) (optional)
-	run_root "rm -rf /srv/alertmanager"
-	run_root "cp -af \"${restore_from_dir}\"/folders/alertmanager/ /srv/alertmanager"
-	run_root "chown -R pmm.pmm /srv/alertmanager"
 	#/srv/grafana (pmm,pmm)
 	run_root "rm -rf /srv/grafana"
 	run_root "cp -af \"${restore_from_dir}\"/folders/grafana/ /srv/grafana"
@@ -507,11 +498,6 @@ perform_restore() {
 	run_root "rm -rf /srv/prometheus"
 	run_root "cp -af \"${restore_from_dir}\"/folders/prometheus/ /srv/prometheus"
 	run_root "chown -R pmm.pmm /srv/prometheus"
-	#/srv/pmm-distribution (pmm,pmm) (optional)
-	run_root "rm -f /srv/pmm-distribution"
-	run_root "cp -af \"${restore_from_dir}\"/folders/pmm-distribution /srv/"
-	run_root "chown -R pmm.pmm /srv/pmm-distribution"
-
 	#last step
 		
 
@@ -524,7 +510,7 @@ perform_restore() {
 	else
 		#since not an upgrade, just restart the services
 		#run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
-		run_root "supervisorctl start alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
+		run_root "supervisorctl start grafana nginx pmm-agent pmm-managed qan-api2"
 	fi
 	msg "${GREEN}Completed${NOFORMAT} configuration and file restore"
 
