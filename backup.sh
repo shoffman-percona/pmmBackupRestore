@@ -15,6 +15,8 @@ backup_version="pmm_backup_$(date +%Y%m%d_%H%M%S)"
 backup_root="/srv/backups"
 backup_dir=${backup_root}/${backup_version}
 clickhouse_database="pmm"
+clickhouse_user="default"
+clickhouse_password="clickhouse"
 pmm_version=$(pmm-managed --version 2> >(grep -Em1 ^Version) | sed 's/.*: //' | awk -F- '{print $1}')
 restore=0
 upgrade=false
@@ -158,7 +160,7 @@ check_pmm_version() {
 	major_version=$(echo "${pmm_version}" | cut -d'.' -f1)
 	
 	if [ "${major_version}" -lt 3 ]; then
-		die "${RED}ERROR${NOFORMAT}: This backup tool requires PMM 3.0.0 or higher. Current version: ${pmm_version}. Please use the pmm-2.0 branch for older PMM versions."
+		die "${RED}ERROR${NOFORMAT}: This backup tool requires PMM 3.0.0 or higher. Current version: ${pmm_version}. Please use the pmm-2.0 branch in github for PMM 2.x."
 	fi
 	
 	msg "${GREEN}Version Check${NOFORMAT}: PMM ${pmm_version} is compatible"
@@ -185,15 +187,15 @@ check_prereqs() {
 	fi
 
 	if ! check_command pigz; then
-		if ! yum install -y pigz; then
+		if ! dnf install -y pigz; then
 			die "${RED}ERROR ${NOFORMAT}: Could not download needed component...check internet?"
 		fi
 	fi
 
 	#set version
-	if [ "${restore}" == 0 ] ; then
+	if [[ "${restore}" == 0 ]] ; then
 		mkdir -p "${backup_dir}"
-		echo ${pmm_version} > "${backup_dir}"/pmm_version.txt
+		echo "${pmm_version}" > "${backup_dir}"/pmm_version.txt
 
 		if ! check_command /tmp/vmbackup-prod; then
 			get_vm
@@ -272,7 +274,7 @@ check_version() {
 	#reset version_check to nothing for reuse
 	version_check=false
 	#msg "  Comparing version ${1} to ${2}"
-	if [ "${1}" == "${2}" ] ; then
+	if [[ "${1}" == "${2}" ]] ; then
 		#versions match, proceed
 		version_check="eq"
 		return 0
@@ -326,10 +328,7 @@ perform_backup() {
 	#pg backup
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL backup"
 	run_root "pg_dump -c -C -U pmm-managed > \"${backup_dir}\"/postgres/backup.sql"
-	check_version "${pmm_version}" "2.39.0"
-	if [[ ${version_check} == "gt" ]]; then
 	run_root "pg_dump -c -C -U grafana > \"${backup_dir}\"/postgres/grafana.sql"
-	fi
 	
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL backup"
 
@@ -341,26 +340,26 @@ perform_backup() {
 	#clickhouse Backup
 
 	msg "${ORANGE}Starting${NOFORMAT} Clickhouse backup"
-	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --query "select name from system.tables where database = '"${clickhouse_database}"'")
+	mapfile -t ch_array < <(/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --query "select name from system.tables where database = '"${clickhouse_database}"'")
 	#get engine type
-	clickhouse_engine=$(/bin/clickhouse-client --host=127.0.0.1 --query "select engine from system.databases where name='"${clickhouse_database}"'")
+	clickhouse_engine=$(/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --query "select engine from system.databases where name='"${clickhouse_database}"'")
 	for table in "${ch_array[@]}"
 	do
-		if [ "${table}" == "schema_migrations" ] ; then
+		if [[ "${table}" == "schema_migrations" ]] ; then
 			msg "  Backing up ${table} table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="SHOW CREATE TABLE ${table}" --format="TabSeparatedRaw" > "${backup_dir}"/clickhouse/"${table}".sql
-			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="SELECT * from ${table}" --format CSV > "${backup_dir}"/clickhouse/"${table}".data
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="SHOW CREATE TABLE ${table}" --format="TabSeparatedRaw" > "${backup_dir}"/clickhouse/"${table}".sql
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="SELECT * from ${table}" --format CSV > "${backup_dir}"/clickhouse/"${table}".data
 		else
 			msg "  Backing up ${table} table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="SHOW CREATE TABLE ${table}" --format="TabSeparatedRaw" > "${backup_dir}"/clickhouse/"${table}".sql
-			/bin/clickhouse-client --host=127.0.0.1 --query "alter table ${clickhouse_database}.${table} freeze"
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="SHOW CREATE TABLE ${table}" --format="TabSeparatedRaw" > "${backup_dir}"/clickhouse/"${table}".sql
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --query "alter table ${clickhouse_database}.${table} freeze"
 			if [ ${clickhouse_engine} == "Ordinary" ] ; then
 				msg "${ORANGE}    INFO: ${NOFORMAT}Engine = ${clickhouse_engine}"
 				run_root "mv /srv/clickhouse/shadow \"${backup_dir}\"/clickhouse/\"${backup_version}\""
 			elif [ ${clickhouse_engine} == "Atomic" ] ; then
 				msg "${ORANGE}    INFO: ${NOFORMAT}Engine = ${clickhouse_engine}"
 				increment=$(cat /srv/clickhouse/shadow/increment.txt)
-				table_uuid=$(/bin/clickhouse-client --host=127.0.0.1 --query "select uuid from system.tables where database = '"${clickhouse_database}"' and name = '"${table}"'")
+				table_uuid=$(/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --query "select uuid from system.tables where database = '"${clickhouse_database}"' and name = '"${table}"'")
 				prefix=$(echo "${table_uuid}" | cut -c1-3)
 				run_root "mkdir -p \"${backup_dir}\"/clickhouse/\"${backup_version}\"/\"${increment}\"/data/\"${clickhouse_database}\"/\"${table}\""
 				run_root "mv /srv/clickhouse/shadow/increment.txt \"${backup_dir}\"/clickhouse/\"${backup_version}\""
@@ -375,12 +374,24 @@ perform_backup() {
 	#support files backup
 	msg "${ORANGE}Starting${NOFORMAT} configuration and supporting files backup"
 
-	run_root "cp -af /srv/alerting \"${backup_dir}\"/folders/"
-	run_root "cp -af /srv/alertmanager \"${backup_dir}\"/folders/"
-	run_root "cp -af /srv/grafana \"${backup_dir}\"/folders/"
-	run_root "cp -af /srv/nginx \"${backup_dir}\"/folders/"
-	run_root "cp -af /srv/prometheus \"${backup_dir}\"/folders/"
-	run_root "cp -af /srv/pmm-distribution \"${backup_dir}\"/folders/"
+	if [ -d "/srv/alerting" ]; then
+		run_root "cp -af /srv/alerting \"${backup_dir}\"/folders/"
+	fi
+	if [ -d "/srv/alertmanager" ]; then
+		run_root "cp -af /srv/alertmanager \"${backup_dir}\"/folders/"
+	fi
+	if [ -d "/srv/grafana" ]; then
+		run_root "cp -af /srv/grafana \"${backup_dir}\"/folders/"
+	fi
+	if [ -d "/srv/nginx" ]; then
+		run_root "cp -af /srv/nginx \"${backup_dir}\"/folders/"
+	fi
+	if [ -d "/srv/prometheus" ]; then
+		run_root "cp -af /srv/prometheus \"${backup_dir}\"/folders/"
+	fi
+	if [ -d "/srv/pmm-distribution" ]; then
+		run_root "cp -af /srv/pmm-distribution \"${backup_dir}\"/folders/"
+	fi
 
 	msg "${GREEN}Completed${NOFORMAT} configuration and supporting files backup"
 
@@ -411,10 +422,7 @@ perform_restore() {
 	#pg restore
 	msg "${ORANGE}Starting${NOFORMAT} PostgreSQL restore"
 	psql -U postgres -f "${restore_from_dir}"/postgres/backup.sql &>>"${logfile}"
-	check_version "${backup_pmm_version}" "2.39.0"
-	if [[ ${version_check} == "gt" ]]; then
 	psql -U postgres -f "${restore_from_dir}"/postgres/grafana.sql &>>"${logfile}"
-	fi
 	msg "${GREEN}Completed${NOFORMAT} PostgreSQL restore"
 
 	#vm restore
@@ -436,23 +444,23 @@ perform_restore() {
 		if [ "${table}" == "schema_migrations" ] ; then
 			# schema_migrations only needs SQL replay, other tables need data copies and reattaching files
 			msg "  Restoring ${table} table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="drop table if exists ${table}"
-			cat "${restore_from_dir}"/clickhouse/"${table}".sql | /bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}"
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="drop table if exists ${table}"
+			cat "${restore_from_dir}"/clickhouse/"${table}".sql | /bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}"
 			# this can be improved as all the data to form this statement is in ${table}.sql and will
 			# be a bit more future-proofed if table structure changes
-			cat "${restore_from_dir}"/clickhouse/"${table}".data | /bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query "INSERT INTO ${clickhouse_database}.${table} SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
+			cat "${restore_from_dir}"/clickhouse/"${table}".data | /bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query "INSERT INTO ${clickhouse_database}.${table} SELECT version, dirty, sequence FROM input('version UInt32, dirty UInt8, sequence UInt64') FORMAT CSV"
 			#check that num rows in == num rows inserted
 			rows_in=$(/bin/wc -l "${restore_from_dir}"/clickhouse/"${table}".data | cut -d " " -f1)
-			rows_inserted=$(clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="select count(*) from ${table}")
-			if [ "${rows_in}" == "${rows_inserted}" ] ; then
+			rows_inserted=$(/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="select count(*) from ${table}")
+			if [[ "${rows_in}" == "${rows_inserted}" ]] ; then
 				msg "  Successfully restored ${table}"
 			else
 				msg "  There was a problem restoring ${table}, ${rows_in} rows backed up but ${rows_inserted} restored"
 			fi
 		else
 			msg "  Restoring ${table} table"
-			/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="drop table if exists ${table}"
-			cat "${restore_from_dir}"/clickhouse/"${table}".sql | /bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}"
+			/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="drop table if exists ${table}"
+			cat "${restore_from_dir}"/clickhouse/"${table}".sql | /bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}"
 			[ ! -d "/srv/clickhouse/data/${clickhouse_database}/${table}/detached" ] && run_root "mkdir -p /srv/clickhouse/data/\"${clickhouse_database}\"/\"${table}\"/detached/"
 			msg "  Copying files"
 			folder=$(cat "${restore_from_dir}"/clickhouse/pmm_backup_"${restore}"/increment.txt)
@@ -469,7 +477,7 @@ perform_restore() {
 			[[ ${UID} -ne 0 ]] &&run_root "chmod -R o-rx /srv/clickhouse";
 			for partition in "${partitions[@]}"; do
 				msg "    Loading partition ${partition}"
-				/bin/clickhouse-client --host=127.0.0.1 --database "${clickhouse_database}" --query="alter table ${table} attach partition ${partition}"
+				/bin/clickhouse-client --host=127.0.0.1 --user "${clickhouse_user}" --password "${clickhouse_password}" --database "${clickhouse_database}" --query="alter table ${table} attach partition ${partition}"
 			done
 		fi
 	done
@@ -479,40 +487,42 @@ perform_restore() {
 
 	#support files restore
 	msg "${ORANGE}Starting${NOFORMAT} configuration and file restore"
-	#/srv/alerting (root,root)
+	#/srv/alerting (pmm,pmm)
 	run_root "rm -rf /srv/alerting"
 	run_root "cp -af \"${restore_from_dir}\"/folders/alerting/ /srv/alerting"
-	run_root "chown -R root.root /srv/alerting"
-	#/srv/alertmanager (pmm,pmm)
+	run_root "chown -R pmm.pmm /srv/alerting"
+	#/srv/alertmanager (pmm,pmm) (optional)
 	run_root "rm -rf /srv/alertmanager"
 	run_root "cp -af \"${restore_from_dir}\"/folders/alertmanager/ /srv/alertmanager"
 	run_root "chown -R pmm.pmm /srv/alertmanager"
-	#/srv/grafana (grafana,grafana)
+	#/srv/grafana (pmm,pmm)
 	run_root "rm -rf /srv/grafana"
 	run_root "cp -af \"${restore_from_dir}\"/folders/grafana/ /srv/grafana"
-	run_root "chown -R grafana.grafana /srv/grafana"
-	#/srv/nginx (root,root)
+	run_root "chown -R pmm.pmm /srv/grafana"
+	#/srv/nginx (pmm,pmm)
 	run_root "rm -rf /srv/nginx"
 	run_root "cp -af \"${restore_from_dir}\"/folders/nginx/ /srv/nginx"
-	run_root "chown -R root.root /srv/nginx"
+	run_root "chown -R pmm.pmm /srv/nginx"
 	#/srv/prometheus (pmm,pmm)
 	run_root "rm -rf /srv/prometheus"
 	run_root "cp -af \"${restore_from_dir}\"/folders/prometheus/ /srv/prometheus"
 	run_root "chown -R pmm.pmm /srv/prometheus"
-	#/srv/pmm-distribution (root,root) (optional)
+	#/srv/pmm-distribution (pmm,pmm) (optional)
 	run_root "rm -f /srv/pmm-distribution"
 	run_root "cp -af \"${restore_from_dir}\"/folders/pmm-distribution /srv/"
-	run_root "chown -R root.root /srv/pmm-distribution"
+	run_root "chown -R pmm.pmm /srv/pmm-distribution"
 
 	#last step
 		
 
 	msg "  Restarting services"
+	#if doing an upgrade, do a full reload of supervisorctl so the post-upgrade scripts can run to fix up the data
 	if ${upgrade} ; then 
 		run_root "supervisorctl reload"
 		sleep 10
 		run_root "supervisorctl reload"
 	else
+		#since not an upgrade, just restart the services
 		#run_root "supervisorctl restart grafana nginx pmm-managed qan-api2"
 		run_root "supervisorctl start alertmanager grafana nginx pmm-agent pmm-managed qan-api2"
 	fi
@@ -539,4 +549,3 @@ setup_colors
 parse_params "${@}"
 main
 die "Thank you for using the PMM Backup Tool!" 0
-
